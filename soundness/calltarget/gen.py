@@ -347,6 +347,120 @@ def controls2():
         runs=['new:app.S0'])
     return out
 
+# ---- ROUND-2 controls (call-target round 2, 2026-10-25; FABLE-REVIEW §3.1/§3.2/§3.4), written and run on published
+# 0.40.17 BEFORE the site generator. Same layout as controls2 (files carry their compile group). Three axes:
+#   wx_unrelated_*  the consumer overrides the member on a class UNRELATED to, or in a SIBLING subtree of, the
+#                   dispatched receiver's static type -> CLEAN;
+#   wx_exact_*      dispatch on a value of FINAL type (or a held value typed by an OPEN subclass the consumer does not
+#                   subclass: the re-key leg) with a consumer subclass of the base -> CLEAN;
+#   nl_*            NON-INVOKING look-alikes, executed: syntax that resembles a hook but runs none -> CLEAN, beside the
+#                   positive twins x_* whose effect DOES run (R1441's provided-overload premise among them).
+def controls3():
+    E = eff('Fs')
+    out = {}
+    def both(name, negative, files_of, go_of, runs_of, places=('mod', 'appimpl')):
+        for pl in places:
+            # mod: everything in-scan under lib; appimpl: owner hierarchy in dep, consumer classes in app
+            o, c = ('lib', 'lib') if pl == 'mod' else ('dep', 'app')
+            og, cg = ('app', 'app') if pl == 'mod' else ('dep', 'app')
+            fs = {}
+            for k, t in files_of(o, c).items():
+                side, path = k.split(':', 1)
+                fs[f'{og if side == "o" else cg}:{path}'] = t
+            out[f'{name}_{pl}'] = dict(place=pl, negative=negative, files=fs, go=go_of(o, c), runs=runs_of(o, c))
+    # -- wx_unrelated: sibling subtree (B, not A) and an unrelated hierarchy, four spellings
+    def sib(decl, mem_pure, mem_eff, call, base_extra='', b_mem=''):
+        def files(o, c):
+            return {f'o:{o}/T.java': f'package {o}; public abstract class T {base_extra} {{ {decl} }}',
+                    f'o:{o}/A.java': f'package {o}; public class A extends T {{ {mem_pure} }}',
+                    f'o:{o}/B.java': f'package {o}; public class B extends T {{ {b_mem} }}',
+                    f'c:{c}/W.java': f'package {c}; public class W extends {o}.B {{ {mem_eff} }}'}
+        return files
+    both('wx_unrelated_sib_virt', True, sib('public void m() { }', '', f'public void m() {{ {E} }}', ''),
+         lambda o, c: f'public static void go({o}.A a) {{ a.m(); }}', lambda o, c: [f'new:{o}.A'])
+    both('wx_unrelated_sib_tostr', True, sib('', 'public String toString() { return "a"; }', f'public String toString() {{ {E} return "w"; }}', ''),
+         lambda o, c: f'public static void go({o}.A a) {{ String r = "v=" + a; }}', lambda o, c: [f'new:{o}.A'])
+    both('wx_unrelated_sib_skel', True, sib('public int size() { return 1; }', 'public Object get(int i) { return "a"; }',
+                                            f'public Object get(int i) {{ {E} return "w"; }}', '', base_extra='extends java.util.AbstractList<Object>',
+                                            b_mem='public Object get(int i) { return "b"; }'),
+         lambda o, c: f'public static void go({o}.A a) {{ boolean r = a.contains("z"); }}', lambda o, c: [f'new:{o}.A'])
+    both('wx_unrelated_sib_read', True, sib('', 'public int read() { return -1; }', f'public int read() {{ {E} return -1; }}', '',
+                                            base_extra='extends java.io.InputStream', b_mem='public int read() { return -1; }'),
+         lambda o, c: f'public static void go({o}.A a) {{ try {{ a.skip(3); }} catch (java.io.IOException e) {{ }} }}', lambda o, c: [f'new:{o}.A'])
+    both('wx_unrelated_sib_thread', True, sib('', 'public void run() { }', f'public void run() {{ {E} }}', '', base_extra='extends Thread'),
+         lambda o, c: f'public static void go({o}.A a) {{ a.start(); try {{ a.join(); }} catch (InterruptedException e) {{ }} }}', lambda o, c: [f'new:{o}.A'])
+    def unrel_skel(o, c):
+        return {f'o:{o}/T.java': f'package {o}; public abstract class T extends java.util.AbstractList<Object> {{ public int size() {{ return 1; }} }}',
+                f'o:{o}/A.java': f'package {o}; public class A extends T {{ public Object get(int i) {{ return "a"; }} }}',
+                f'c:{c}/U.java': f'package {c}; public class U extends java.util.AbstractList<Object> {{ public int size() {{ return 1; }} public Object get(int i) {{ {E} return "u"; }} }}'}
+    both('wx_unrelated_skel', True, unrel_skel, lambda o, c: f'public static void go({o}.A a) {{ boolean r = a.contains("z"); }}', lambda o, c: [f'new:{o}.A'])
+    # -- wx_exact: a FINAL receiver type, and the re-key leg (held value typed by an open subclass O)
+    def fin(decl, mem_eff, base_extra=''):
+        def files(o, c):
+            return {f'o:{o}/T.java': f'package {o}; public abstract class T {base_extra} {{ {decl} }}',
+                    f'o:{o}/F.java': f'package {o}; public final class F extends T {{ }}',
+                    f'o:{o}/O.java': f'package {o}; public class O extends T {{ }}',
+                    f'o:{o}/Mk.java': f'package {o}; public class Mk {{ public static F f() {{ return new F(); }} public static O o() {{ return new O(); }} '
+                                      f'public static T t() {{ return new F(); }} }}',
+                    f'o:{o}/Run.java': f'package {o}; public class Run {{ public static void virt(O x) {{ x.m(); }} }}'
+                                      if 'm()' in decl else
+                                      (f'package {o}; public class Run {{ public static boolean skel(O x) {{ return x.contains("z"); }} }}' if 'size' in decl else
+                                       f'package {o}; public class Run {{ }}'),
+                    f'c:{c}/W.java': f'package {c}; public class W extends {o}.T {{ {mem_eff} }}'}
+        return files
+    vf = fin('public void m() { }', f'public void m() {{ {E} }}')
+    sf = fin('public int size() { return 1; } public Object get(int i) { return "t"; }', f'public Object get(int i) {{ {E} return "w"; }}',
+             base_extra='extends java.util.AbstractList<Object>')
+    both('wx_exact_final_virt', True, vf, lambda o, c: f'public static void go(Object x) {{ {o}.F f = {o}.Mk.f(); f.m(); }}', lambda o, c: ['none'])
+    both('wx_exact_final_skel', True, sf, lambda o, c: f'public static void go(Object x) {{ {o}.F f = {o}.Mk.f(); boolean r = f.contains("z"); }}', lambda o, c: ['none'])
+    both('wx_exact_prod_skel', True, sf, lambda o, c: f'public static void go(Object x) {{ {o}.T t = {o}.Mk.t(); boolean r = t.contains("z"); }}', lambda o, c: ['none'])
+    # the EXPLICIT twin of wx_exact_prod_skel: the same exact producer, the member called by name. Bounded CHA over the
+    # declared type charges a consumer subclass it cannot be (the licensed over-approximation, R868's family): this
+    # cell says whether the skeleton spelling is held to the explicit one's answer, not to a stricter one
+    both('wx_exact_prod_virt', True, vf, lambda o, c: f'public static void go(Object x) {{ {o}.T t = {o}.Mk.t(); t.m(); }}', lambda o, c: ['none'])
+    both('wx_rekey_virt', True, vf, lambda o, c: f'public static void go(Object x) {{ {o}.Run.virt({o}.Mk.o()); }}', lambda o, c: ['none'])
+    both('wx_rekey_skel', True, sf, lambda o, c: f'public static void go(Object x) {{ boolean r = {o}.Run.skel({o}.Mk.o()); }}', lambda o, c: ['none'])
+    # -- nl: non-invoking look-alikes (negative) and their positive twins (x_)
+    def single(cls_src):
+        return lambda o, c: {f'c:{c}/W.java': cls_src(o, c)}
+    both('nl_mref_stored_local', True, lambda o, c: {f'c:{c}/L.java': f'package {c}; public class L {{ public static void loud() {{ {E} }} }}'},
+         lambda o, c: f'public static void go(Object x) {{ Runnable r = {c}.L::loud; Object k = r; }}', lambda o, c: ['none'])
+    both('nl_instanceof', True, single(lambda o, c: f'package {c}; public class W {{ public boolean equals(Object x) {{ {E} return false; }} public int hashCode() {{ return 1; }} }}'),
+         lambda o, c: f'public static void go(Object t) {{ boolean b = t instanceof {c}.W; }}', lambda o, c: [f'new:{c}.W'])
+    both('nl_requirenonnull', True, single(lambda o, c: f'package {c}; public class W {{ public String toString() {{ {E} return "w"; }} }}'),
+         lambda o, c: f'public static void go({c}.W t) {{ java.util.Objects.requireNonNull(t, "msg"); }}', lambda o, c: [f'new:{c}.W'])
+    both('nl_thread_unstarted', True, single(lambda o, c: f'package {c}; public class W extends Thread {{ public void run() {{ {E} }} }}'),
+         lambda o, c: f'public static void go({c}.W t) {{ t.setName("x"); }}', lambda o, c: [f'new:{c}.W'])
+    both('nl_oos_other', True, single(lambda o, c: f'package {c}; public class W implements java.io.Serializable {{ private void writeObject(java.io.ObjectOutputStream s) throws java.io.IOException {{ {E} s.defaultWriteObject(); }} }}'),
+         lambda o, c: f'public static void go({c}.W t) {{ try {{ new java.io.ObjectOutputStream(java.io.OutputStream.nullOutputStream()).writeObject(t.getClass().getName()); }} catch (java.io.IOException e) {{ }} }}',
+         lambda o, c: [f'new:{c}.W'])
+    # R1441: the PROVIDED overload is overridden, so the JDK body that would re-enter read never runs
+    def skipov(o, c):
+        return {f'o:{o}/T.java': f'package {o}; public abstract class T extends java.io.InputStream {{ public long skip(long n) {{ return n; }} }}',
+                f'c:{c}/W.java': f'package {c}; public class W extends {o}.T {{ public int read() {{ {E} return -1; }} }}'}
+    both('nl_skip_overridden', True, skipov, lambda o, c: f'public static void go({o}.T t) {{ try {{ t.skip(3); }} catch (Exception e) {{ }} }}',
+         lambda o, c: [f'new:{c}.W'])
+    def skipown(o, c):
+        return {f'c:{c}/W.java': f'package {c}; public class W extends java.io.InputStream {{ public int read() {{ {E} return -1; }} public long skip(long n) {{ return n; }} }}'}
+    both('nl_skip_own', True, skipown, lambda o, c: f'public static void go({c}.W t) {{ try {{ t.skip(3); }} catch (Exception e) {{ }} }}', lambda o, c: [f'new:{c}.W'])
+    def skipinh(o, c):
+        return {f'o:{o}/T.java': f'package {o}; public abstract class T extends java.io.InputStream {{ }}',
+                f'c:{c}/W.java': f'package {c}; public class W extends {o}.T {{ public int read() {{ {E} return -1; }} }}'}
+    both('x_skip_inherited', False, skipinh, lambda o, c: f'public static void go({o}.T t) {{ try {{ t.skip(3); }} catch (java.io.IOException e) {{ }} }}',
+         lambda o, c: [f'new:{c}.W'])
+    def wrinh(o, c):
+        return {f'o:{o}/T.java': f'package {o}; public abstract class T extends java.io.Writer {{ public void flush() {{ }} public void close() {{ }} }}',
+                f'c:{c}/W.java': f'package {c}; public class W extends {o}.T {{ public void write(char[] b, int off, int len) {{ {E} }} }}'}
+    both('x_write_inherited', False, wrinh, lambda o, c: f'public static void go({o}.T t) {{ try {{ t.write("s"); }} catch (java.io.IOException e) {{ }} }}',
+         lambda o, c: [f'new:{c}.W'])
+    # an AbstractCollection skeleton reached through a JDK STATIC: new ArrayList<>(c) runs c.toArray() -> iterator()
+    def coll(o, c):
+        return {f'o:{o}/T.java': f'package {o}; public abstract class T extends java.util.AbstractCollection<Object> {{ public int size() {{ return 0; }} }}',
+                f'c:{c}/W.java': f'package {c}; public class W extends {o}.T {{ public java.util.Iterator<Object> iterator() {{ {E} return java.util.Collections.emptyIterator(); }} }}'}
+    both('x_skel_copyctor', False, coll, lambda o, c: f'public static void go({o}.T t) {{ java.util.List<Object> l = new java.util.ArrayList<>(t); }}', lambda o, c: [f'new:{c}.W'])
+    both('x_skel_addall', False, coll, lambda o, c: f'public static void go({o}.T t) {{ java.util.List<Object> l = new java.util.ArrayList<>(); l.addAll(t); }}', lambda o, c: [f'new:{c}.W'])
+    return out
+
 # ---------------------------------------------------------------- Main
 def main_src(go_src, effect, how_needed=True):
     net_setup = net_check = ''
@@ -561,7 +675,7 @@ def main():
             runs = c['runs'] if pname == 'mod' else [r.replace('lib2.', 'dep2x.').replace('lib.', 'dep.') for r in c['runs']]
             cid = f'{cname}.{pname}.n0.Fs'
             ids.append(emit(cid, dict(kind=cname, family='control', place=pname, n=0), files, go, runs, 'Fs', pname == 'dep', negative=True))
-    for cname, c in (controls2().items() if MODE == 'base' else {}.items()):
+    for cname, c in (list(controls2().items()) + list(controls3().items()) if MODE == 'base' else []):
         files = {}
         for k, t in c['files'].items():
             g, p = k.split(':', 1)

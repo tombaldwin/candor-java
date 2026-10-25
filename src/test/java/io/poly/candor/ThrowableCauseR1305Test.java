@@ -91,11 +91,33 @@ class ThrowableCauseR1305Test {
         }
         assertTrue(derived.containsKey("java/lang/Throwable.(Ljava/lang/Throwable;)V"), "the derivation is blind: " + derived.size());
         assertTrue(derived.size() >= 60, "the derivation found too little to be a reading: " + derived.size());
+        // call-target round 2: the table the engine reads is the derived JDK site table (JdkSites). This test is the
+        // second, independent derivation on the JDK the tests run on; every stringifying constructor a USER can call
+        // (a public class, a public/protected constructor) on an argument a user can supply (not a final class such as
+        // String, which has no override to run) must be a hook there.
+        int checked = 0;
         for (var e : derived.entrySet()) {
-            int[] have = Rules.THROWABLE_CTOR_TOSTRING.get(e.getKey());
-            assertNotNull(have, "R1305: this JDK's " + e.getKey() + " stringifies " + e.getValue() + " and is not in the table");
-            assertArrayEquals(e.getValue().stream().mapToInt(Integer::intValue).toArray(), have, e.getKey());
+            String k = e.getKey();
+            String c = k.substring(0, k.indexOf(".(")), desc = k.substring(k.indexOf(".(") + 1);
+            ClassNode cn = load(c);
+            MethodNode ctor = null;
+            for (MethodNode mn : cn.methods) if (mn.name.equals("<init>") && mn.desc.equals(desc)) ctor = mn;
+            if ((cn.access & Opcodes.ACC_PUBLIC) == 0 || ctor == null || (ctor.access & (Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED)) == 0) continue;
+            org.objectweb.asm.Type[] at = org.objectweb.asm.Type.getArgumentTypes(desc);
+            Set<Integer> want = new TreeSet<>();
+            for (int i : e.getValue()) {
+                ClassNode pc = at[i].getSort() == org.objectweb.asm.Type.OBJECT ? load(at[i].getInternalName()) : null;
+                if (pc != null && (pc.access & Opcodes.ACC_FINAL) != 0) continue;
+                want.add(i);
+            }
+            if (want.isEmpty()) continue;
+            int[] have = JdkSites.argsHooking(c, "<init>", desc, "toString()Ljava/lang/String;");
+            for (int i : want)
+                assertTrue(Arrays.stream(have).anyMatch(x -> x == i),
+                        "R1305: this JDK's " + k + " stringifies argument " + i + " and the JDK site table has no such hook");
+            checked++;
         }
+        assertTrue(checked >= 60, "the cross-check compared too little to be a reading: " + checked);
     }
 
     private ClassNode load(String n) {

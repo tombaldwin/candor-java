@@ -58,7 +58,7 @@ public final class JdkIndexGen {
     private JdkIndexGen() {}
 
     static final String SUPERS = "jdk-supertypes.idx", SAMS = "jdk-sams.idx", HOF = "jdk-hof-invokes.idx",
-            FUNCTIONAL = "jdk-functional.idx";
+            FUNCTIONAL = "jdk-functional.idx", SITES = "jdk-sites.idx";
     static final Set<String> OBJECT_METHODS = Set.of("equals(Ljava/lang/Object;)Z", "hashCode()I", "toString()Ljava/lang/String;");
     static final int IDENTITY_BODY_LIMIT = 24;
 
@@ -71,6 +71,7 @@ public final class JdkIndexGen {
             Files.writeString(out.resolve(SAMS), im.samsText(), StandardCharsets.UTF_8);
             Files.writeString(out.resolve(HOF), im.hofText(), StandardCharsets.UTF_8);
             Files.writeString(out.resolve(FUNCTIONAL), im.functionalText(), StandardCharsets.UTF_8);
+            Files.writeString(out.resolve(SITES), im.sitesText(), StandardCharsets.UTF_8);
             return;
         }
         if (a.length >= 3 && a[0].equals("--union")) {
@@ -83,8 +84,9 @@ public final class JdkIndexGen {
             writeGz(out.resolve(SAMS + ".gz"), u.samsText());
             writeGz(out.resolve(HOF + ".gz"), u.hofText());
             writeGz(out.resolve(FUNCTIONAL + ".gz"), u.functionalText());
-            System.err.printf("jdk-index: %d images -> %d supertype lines, %d SAMs, %d HOF keys%n",
-                    ims.size(), u.supers.size(), u.sams.size(), u.hof.size());
+            writeGz(out.resolve(SITES + ".gz"), u.sitesText());
+            System.err.printf("jdk-index: %d images -> %d supertype lines, %d SAMs, %d HOF keys, %d site lines%n",
+                    ims.size(), u.supers.size(), u.sams.size(), u.hof.size(), u.sites.size());
             return;
         }
         if (a.length >= 2 && a[0].equals("--cat")) {   // decompress a checked-in index (the drift check compares TEXT)
@@ -102,6 +104,7 @@ public final class JdkIndexGen {
         final TreeMap<String, String> sams = new TreeMap<>();           // iface -> sam name
         final TreeMap<String, TreeSet<Integer>> hof = new TreeMap<>();  // "name desc" -> invoked arg indexes
         final TreeSet<String> functional = new TreeSet<>();             // interfaces annotated @FunctionalInterface
+        final TreeMap<String, TreeSet<String>> sites = new TreeMap<>(); // call-target round 2: JdkSiteGen's site table
         Image(String home, int feature) { this.home = home; this.feature = feature; }
 
         String supersText() {
@@ -112,6 +115,12 @@ public final class JdkIndexGen {
         String samsText() {
             StringBuilder sb = new StringBuilder();
             for (var e : sams.entrySet()) sb.append(e.getKey()).append(' ').append(e.getValue()).append('\n');
+            return sb.toString();
+        }
+        /** {@code X.member} TAB hook TAB hook … (see JdkSiteGen) */
+        String sitesText() {
+            StringBuilder sb = new StringBuilder();
+            for (var e : sites.entrySet()) sb.append(e.getKey()).append('\t').append(String.join("\t", e.getValue())).append('\n');
             return sb.toString();
         }
         String functionalText() {
@@ -158,8 +167,11 @@ public final class JdkIndexGen {
             }
             for (var e : im.hof.entrySet()) u.hof.computeIfAbsent(e.getKey(), k -> new TreeSet<>()).addAll(e.getValue());
             u.functional.addAll(im.functional);
+            // a site fact from ANY pinned image is kept (a missing hook fails toward silence); guard sets re-pruned
+            for (var e : im.sites.entrySet()) u.sites.computeIfAbsent(e.getKey(), k -> new TreeSet<>()).addAll(e.getValue());
         }
         System.err.println("jdk-index: " + superConflicts + " class(es) whose superclass differs between images (newest kept)");
+        for (TreeSet<String> hs : u.sites.values()) JdkSiteGen.prune(hs);
         return u;
     }
 
@@ -194,6 +206,7 @@ public final class JdkIndexGen {
             supertypes(paths, im);
             sams(paths, im);
             hof(paths, im);
+            im.sites.putAll(JdkSiteGen.derive(paths));
         }
         return im;
     }

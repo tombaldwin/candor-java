@@ -157,8 +157,8 @@ final class ArgContract {
         // (2) …or hands its parameter to a JDK re-entry sink — the same table Candor#contractReentry reads
         if (Candor.isToStringContractSink(min.owner, min.name, min.desc)
                 && !(min.owner.equals("java/lang/String") && min.name.equals("format"))) {
-            for (ProvValue a : Candor.callArgs(f, min)) {
-                int p = Candor.paramIndexOf(s.mn, a, f0);
+            for (int j : Candor.toStringSinkArgs(min.owner, min.name, min.desc)) {
+                int p = Candor.paramIndexOf(s.mn, Candor.callArg(f, min, j), f0);
                 if (p >= 0) direct(c, s.id, p, TOSTRING, min);
             }
         }
@@ -296,16 +296,12 @@ final class ArgContract {
         int op = min.getOpcode();
         if (op == Opcodes.INVOKESTATIC || op == Opcodes.INVOKESPECIAL) {
             ClassNode cn = c.byName.get(min.owner);
-            String t = Cha.declaresConcrete(cn, min.name, min.desc) ? Cha.methodId(dotted, min.name, min.desc)
-                    : Cha.nearestConcreteSuper(min.owner, min.name, min.desc);
-            return t == null ? List.of() : List.of(t);
+            return Cha.declaresConcrete(cn, min.name, min.desc) ? List.of(Cha.methodId(dotted, min.name, min.desc))
+                    : Cha.concreteTargets(min.owner, min.name, min.desc);
         }
         if (op != Opcodes.INVOKEVIRTUAL && op != Opcodes.INVOKEINTERFACE) return List.of();
         String mono = Interp.monomorphicReceiver(f, min);
-        if (mono != null && c.byName.containsKey(mono)) {
-            String t = Cha.monomorphicTarget(mono, min.name, min.desc);
-            return t == null ? List.of() : List.of(t);
-        }
+        if (mono != null && c.byName.containsKey(mono)) return Cha.monomorphicTargets(mono, min.name, min.desc);
         List<String> cha = Cha.chaTargets(min.owner, min.name, min.desc);
         return cha.size() <= Rules.CHA_FANOUT_LIMIT ? cha : List.of();
     }
@@ -603,8 +599,7 @@ final class ArgContract {
                 String t = x.substring(0, x.indexOf('\t'));
                 boolean exact = x.endsWith("\t1");
                 for (String[] m : contractMembers(t)) {
-                    String body = exact ? Cha.monomorphicTarget(t, m[1], m[2]) : null;
-                    List<String> bodies = exact ? (body == null ? List.of() : List.of(body)) : Cha.chaTargets(t, m[1], m[2]);
+                    List<String> bodies = exact ? Cha.monomorphicTargets(t, m[1], m[2]) : Cha.chaTargets(t, m[1], m[2]);
                     for (String b : bodies)
                         if (newConcrete(fx, b, caller)) {
                             added |= disclose(c, caller, m[0], m[1], "R1166WITNESS", t, b);
@@ -641,7 +636,8 @@ final class ArgContract {
             int paren = key.indexOf('('), dot = key.lastIndexOf('.', paren);
             String name = key.substring(dot + 1, paren), desc = key.substring(paren);
             List<String> cands = Cha.chaTargets(owner, name, desc);
-            List<String> held = Candor.R1306 ? Cha.heldReentry(owner, name, desc) : List.of();
+            // R1306, generalised by call-target round 2 to every member the site table re-enters
+            List<String> held = Candor.R1306 ? Cha.heldReentryAny(owner, name, desc) : List.of();
             if (!held.isEmpty()) { cands = new ArrayList<>(cands); cands.addAll(held); }   // SOUNDNESS R1306
             for (String b : cands)
                 if (newConcrete(fx, b, caller) || (R1303_UNKNOWN && newUnknown(fx, b, caller))) {
@@ -1133,7 +1129,7 @@ final class ArgContract {
                                 || Candor.mayCompareArg0(min.owner, min.name, min.desc, null)) otherNames.add("compareTo");
                         String fc = Candor.formatterSinkCtor(min.owner, min.name, min.desc);
                         if (fc != null) otherNames.add(fc);
-                        if (Candor.ioDriverContract(min.name) != null) otherNames.addAll(List.of("write", "append", "read"));
+                        otherNames.addAll(JdkSites.hookNames(min.owner, min.name, min.desc));   // a JDK body's re-entry (R32 and kin)
                         Frame<ProvValue> f = pf[i];
                         int op = min.getOpcode();
                         boolean onBound = f != null && self != null && op != Opcodes.INVOKESTATIC
@@ -1147,6 +1143,14 @@ final class ArgContract {
                         if (onBound) {
                             calls.add(new String[] {String.valueOf(op), min.owner, min.name, min.desc});
                             thisKeys.add(nd);
+                            // call-target round 2: a call on the bound value also takes the bodies a JDK body RE-ENTERS on
+                            // it (the site table: `l.contains(o)` over a project AbstractList subtype edges its `get`),
+                            // under other names — they belong to this call, so the specialised copy withdraws them with it
+                            if (op == Opcodes.INVOKEVIRTUAL || op == Opcodes.INVOKEINTERFACE)
+                                for (String t : Cha.chaTargets(min.owner, min.name, min.desc)) {
+                                    String n2 = nameDesc(c, t);
+                                    if (n2 != null && !n2.equals(nd)) thisKeys.add(n2);
+                                }
                         } else if (passAt >= 0 && f != null) {
                             for (String n : projectCallees(c, min, f)) passes.add(new String[] {n, String.valueOf(passAt)});
                             passKeys.add(nd);
@@ -1189,15 +1193,11 @@ final class ArgContract {
         MethodNode om = Candor.findMethod(oc, name, desc);
         if (op == Opcodes.INVOKESPECIAL || om != null && (om.access & Opcodes.ACC_PRIVATE) != 0) {
             if (oc == null) return List.of();   // `super.m()` into a JDK/dependency class: no project body
-            String tg = Cha.declaresConcrete(oc, name, desc) ? Cha.methodId(owner.replace('/', '.'), name, desc)
-                    : Cha.nearestConcreteSuper(owner, name, desc);
-            return tg == null ? List.of() : List.of(tg);
+            return Cha.declaresConcrete(oc, name, desc) ? List.of(Cha.methodId(owner.replace('/', '.'), name, desc))
+                    : Cha.concreteTargets(owner, name, desc);
         }
         if (!c.byName.containsKey(t)) return List.of();
-        if (exact) {
-            String tg = Cha.monomorphicTarget(t, name, desc);
-            return tg == null ? List.of() : List.of(tg);
-        }
+        if (exact) return Cha.monomorphicTargets(t, name, desc);
         return Cha.chaTargets(t, name, desc);
     }
 

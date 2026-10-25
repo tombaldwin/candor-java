@@ -1,19 +1,21 @@
 # file	lines	decisions  (ci/loc-ratchet.py --update)
 src/main/java/io/poly/candor/AnalysisContext.java	678	43
 src/main/java/io/poly/candor/AnalysisState.java	47	0
-src/main/java/io/poly/candor/ArgContract.java	1243	476
+src/main/java/io/poly/candor/ArgContract.java	1243	474
 src/main/java/io/poly/candor/CallTargets.java	308	82
-src/main/java/io/poly/candor/Candor.java	12927	3067
-src/main/java/io/poly/candor/Cha.java	1110	208
+src/main/java/io/poly/candor/Candor.java	12930	3057
+src/main/java/io/poly/candor/Cha.java	1164	206
 src/main/java/io/poly/candor/Classifier.java	4063	2495
 src/main/java/io/poly/candor/Config.java	541	79
 src/main/java/io/poly/candor/DbClientSurface.java	573	38
 src/main/java/io/poly/candor/DbHandleFlow.java	1069	490
 src/main/java/io/poly/candor/DepFn.java	226	25
 src/main/java/io/poly/candor/ElementFlow.java	2864	1578
-src/main/java/io/poly/candor/ExactTypes.java	546	212
+src/main/java/io/poly/candor/ExactTypes.java	561	215
+src/main/java/io/poly/candor/Fallback.java	81	63
 src/main/java/io/poly/candor/FrameworkReach.java	214	51
 src/main/java/io/poly/candor/Interp.java	752	214
+src/main/java/io/poly/candor/JdkSites.java	408	142
 src/main/java/io/poly/candor/KappaJdkSinks.java	372	252
 src/main/java/io/poly/candor/Literals.java	928	346
 src/main/java/io/poly/candor/Loader.java	1261	278
@@ -21,7 +23,7 @@ src/main/java/io/poly/candor/Policy.java	2454	348
 src/main/java/io/poly/candor/Query.java	6115	1075
 src/main/java/io/poly/candor/Refresh.java	791	143
 src/main/java/io/poly/candor/ReportWriter.java	1359	206
-src/main/java/io/poly/candor/Rules.java	826	39
+src/main/java/io/poly/candor/Rules.java	719	38
 src/main/java/io/poly/candor/Surface.java	372	73
 src/main/java/io/poly/candor/model/Coverage.java	17	0
 src/main/java/io/poly/candor/model/Diagnostic.java	20	0

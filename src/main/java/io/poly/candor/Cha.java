@@ -799,7 +799,8 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
                 // SOUNDNESS R1299 — never for an ABSTRACT class: no instance of it exists, so the JDK body never runs
                 // on it; each concrete subtype is walked in its own turn and re-enters for itself. Spring's abstract
                 // `MethodOverride` (both concrete subclasses declare toString) was charged its own hashCode's Unknown.
-                else if ((cn.access & Opcodes.ACC_ABSTRACT) == 0) reentry.addAll(jdkReentryTargets(cn.name, name, desc));
+                else if ((cn.access & Opcodes.ACC_ABSTRACT) == 0 && priced(cn.name, name, desc) && reentryOverOwner(owner, name, desc))
+                    reentry.addAll(jdkReentryTargets(cn.name, name, desc));
             }
         }
         // R1235: the re-entered bodies JOIN the answer, but never turn a narrow one broad. Every caller prices the
@@ -837,6 +838,69 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
     static List<String> heldReentry(String owner, String name, String desc) {
         if (!((name.equals("toString") || name.equals("getLocalizedMessage")) && desc.equals("()Ljava/lang/String;")))
             return List.of();
+        return heldReentryAny(owner, name, desc);
+    }
+
+    /** {@link #heldReentry} for ANY member (call-target round 2): the site table's re-entry bodies the bound held back.
+     *  An explicit dispatch whose CHA is empty only because they were held is a past-bound dispatch, and is disclosed
+     *  as one ({@code Candor#virtualDispatch}) — the in-scan bound rule, applied to the re-entered spelling. */
+    /** The members whose JDK re-entry is part of the CHA ANSWER, priced against the bound as R1235/R1300 always priced
+     *  it: the root types' string members. Every other member's re-entry (a skeleton's get, a Thread's run) is decided
+     *  beside the answer ({@link #extraReentry}), so a newly derived re-entry body can never carry an answer the bound
+     *  kept narrow past it — measured on the corpus: counting them in moved 9 commons-beanutils `toString` sites past
+     *  the bound and dropped the `hashCode` re-entries they had always carried. */
+    /** Priced for one subtype: a root-type string member whose table line, on that subtype, is CLOSED — the R1235/R1300
+     *  shape exactly (Object.toString runs hashCode and nothing else). An OPEN line (AbstractCollection.toString also
+     *  formats every element) is decided beside the answer. */
+    static boolean priced(String sub, String name, String desc) {
+        return pricedReentry(name, desc) && JdkSites.closedOnThis(sub, name, desc);
+    }
+
+    static boolean pricedReentry(String name, String desc) {
+        return (name.equals("toString") || name.equals("getLocalizedMessage")) && desc.equals("()Ljava/lang/String;")
+                || isPrintStackTrace(name, desc);
+    }
+
+    /** The re-entry bodies of a NON-priced member over {@code owner}'s project subtypes that do not declare it: decided
+     *  by {@code Candor#virtualDispatch} beside the CHA answer (edged in bound, the floor past it). */
+    static List<String> extraReentry(String owner, String name, String desc) {
+        if (!reentryOverOwner(owner, name, desc)) return List.of();
+        AnalysisContext c = ctx();
+        String key = owner + '\t' + name + desc;
+        Map<String, List<String>> memo = EXTRA.computeIfAbsent(c, k -> new java.util.concurrent.ConcurrentHashMap<>());
+        List<String> m = memo.get(key);
+        if (m != null) return m;
+        Set<String> out = new LinkedHashSet<>();
+        for (String cName : c.subtypeIndex.getOrDefault(owner, List.of())) {
+            ClassNode cn = c.byName.get(cName);
+            if (cn == null || (cn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_INTERFACE)) != 0) continue;
+            if (declaresConcrete(cn, name, desc) || nearestConcreteSuperNoReentry(cn.name, name, desc) != null) continue;
+            if (priced(cn.name, name, desc)) continue;   // part of the CHA answer
+            out.addAll(jdkReentryTargets(cn.name, name, desc));
+        }
+        List<String> r = List.copyOf(out);
+        memo.put(key, r);
+        return r;
+    }
+    /** Every body a dispatch of {@code name+desc} over {@code owner} can run: the CHA answer and the re-entry decided
+     *  beside it — for a site that wants the candidate set, not the bound-priced answer (a JDK body's argument hook,
+     *  a dependency receiver's consumer half). */
+    static List<String> chaWithReentry(String owner, String name, String desc) {
+        List<String> a = chaTargets(owner, name, desc), x = extraReentry(owner, name, desc);
+        if (x.isEmpty()) return a;
+        Set<String> u = new LinkedHashSet<>(a); u.addAll(x);
+        return new ArrayList<>(u);
+    }
+
+    private static final Map<AnalysisContext, Map<String, List<String>>> EXTRA =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
+    static List<String> heldReentryAny(String owner, String name, String desc) {
+        {   // the re-entry decided beside the answer, where it is past the bound
+            List<String> x = extraReentry(owner, name, desc);
+            if (!x.isEmpty() && !inBound(x, owner)) return x;
+            if (!pricedReentry(name, desc)) return List.of();
+        }
         AnalysisContext c = ctx();
         String key = owner + '\t' + name + desc;
         Map<String, List<String>> memo = HELD.computeIfAbsent(c, k -> new java.util.concurrent.ConcurrentHashMap<>());
@@ -848,7 +912,8 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
             if (declaresConcrete(cn, name, desc)) { out.add(methodId(cn.name.replace('/', '.'), name, desc)); continue; }
             String impl = nearestConcreteSuperNoReentry(cn.name, name, desc);
             if (impl != null) out.add(impl);
-            else if ((cn.access & Opcodes.ACC_ABSTRACT) == 0) reentry.addAll(jdkReentryTargets(cn.name, name, desc));
+            else if ((cn.access & Opcodes.ACC_ABSTRACT) == 0 && reentryOverOwner(owner, name, desc))
+                reentry.addAll(jdkReentryTargets(cn.name, name, desc));
         }
         reentry.removeAll(out);
         boolean held = !reentry.isEmpty() && out.size() <= Rules.CHA_FANOUT_LIMIT
@@ -866,10 +931,8 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
      *  monomorphic receiver, replacing the CHA sibling fan-out with the one real target. Returns null only
      *  if no concrete impl is visible in `recv`'s own chain (then the caller keeps the CHA — sound). */
     static String monomorphicTarget(String recv, String name, String desc) {
-        ClassNode c = ctx().byName.get(recv);
-        if (c != null && declaresConcrete(c, name, desc))
-            return methodId(recv.replace('/', '.'), name, desc);
-        return nearestConcreteSuper(recv, name, desc);
+        List<String> all = monomorphicTargets(recv, name, desc);
+        return all.isEmpty() ? null : all.get(0);
     }
 
     /** The concrete `(name, desc)` declaration `internal` would invoke via inheritance: the first one
@@ -883,8 +946,10 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
      *  `Root.go()` and `Trace.go()` are concrete resolved to {@code Trace.go} and `h.go()` read PURE,
      *  though the JVM runs {@code Root.go}. {@link #resolutionOrder} is the fix and the shared walk. */
     static String nearestConcreteSuper(String internal, String name, String desc) {
-        String m = nearestConcreteSuperNoReentry(internal, name, desc);
-        return m != null ? m : jdkReentryTarget(internal, name, desc);
+        // call-target round 2: the PROJECT declaration only. A JDK body's re-entry is a SET (AbstractList.contains runs
+        // get and size), so every site that edges asks the list form (concreteTargets / monomorphicTargets); this form
+        // answers "is there a project body", which the classification walks ask, and a re-entry is not one
+        return nearestConcreteSuperNoReentry(internal, name, desc);
     }
 
     /** {@link #nearestConcreteSuper} without the R1235 re-entry: the project declaration alone. */
@@ -904,90 +969,79 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
      * {@code internal}'s chain declares the member, the body that runs is a JDK one, and the walk above has
      * always answered "nothing to edge" — true of the JDK body's own instructions, false of what it CALLS.
      * {@code Object.toString()} is {@code getClass().getName() + "@" + Integer.toHexString(hashCode())}: a
-     * VIRTUAL {@code this.hashCode()}. So {@code class H { int hashCode(){ writes a file } }} with no
-     * {@code toString} wrote the file on {@code h.toString()}, {@code "" + h}, {@code String.valueOf(h)},
-     * {@code sb.append(h)} and {@code Objects.toString(h)} — and every one read ABSENT, {@code deny Fs} exit 0
-     * (executed, JDK 21). {@code Throwable.toString()} is the same shape one level up: it calls
-     * {@code this.getLocalizedMessage()}, whose own body calls {@code this.getMessage()}.
+     * VIRTUAL {@code this.hashCode()}; {@code Throwable.toString()} calls {@code this.getLocalizedMessage()}, whose
+     * body calls {@code this.getMessage()}; {@code AbstractList.contains} runs {@code this.get}/{@code size}.
      *
-     * <p>The answer is the body the JDK one dispatches to, resolved on the SAME receiver class — a resolution,
-     * not a hedge: that body's effects are exactly what the call adds, because the rest of each JDK body here
-     * is pure string building. Returned in place of {@code null}, so every resolver that already asks this
-     * question (CHA's per-subtype walk, {@link #monomorphicTarget}, the JDK re-entry sinks via
-     * {@code reentryTargets}, the argument contracts' {@code jvmTarget}) gets it without a second copy.
+     * <p>The answer is the body the JDK one dispatches to, resolved on the SAME receiver class, read from the derived
+     * JDK site table ({@link JdkSites}) — call-target round 2 replaced the hand table that named two driving members
+     * (R1235) and printStackTrace's two (R1300) with the table derived from JDK bytecode, which names every one.
+     * Returned in place of {@code null}, so every resolver that already asks this question (CHA's per-subtype walk,
+     * {@link #monomorphicTarget}, the JDK re-entry sinks via {@code reentryTargets}, the argument contracts'
+     * {@code jvmTarget}) gets it without a second copy.
      *
-     * <p>Decided only where the JDK body is KNOWN: the first class past the project chain is {@code Object}
-     * itself (so the body is {@code Object.toString}), or a {@code java.*} {@code Throwable} for the two
-     * Throwable members. A project class extending any other JDK or library class keeps the old answer — that
-     * class may override the member with a body this table does not describe. No project body for the driven
-     * member (an {@code Object.hashCode}, a {@code Throwable.getMessage}) is pure, and stays null.
+     * <p>Decided only where the JDK body is KNOWN: the first class past the project chain is a JDK class. A project
+     * class extending a dependency or another library class keeps the old answer — that class may override the
+     * member with a body the table does not describe.
      */
-    static String jdkReentryTarget(String internal, String name, String desc) {
-        List<String> all = jdkReentryTargets(internal, name, desc);
-        return all.isEmpty() ? null : all.get(0);
-    }
-
-    /** SOUNDNESS R1300 — the THROWABLE members whose JDK body prints the receiver. {@code printStackTrace()} and its
-     *  {@code PrintStream}/{@code PrintWriter} forms run {@code s.println(this)} — {@code String.valueOf(this)}, i.e.
-     *  {@code this.toString()} — and then the VIRTUAL {@code this.getCause()} (JDK 21 {@code Throwable#printStackTrace
-     *  (PrintStreamOrWriter)}; {@code dejaVu} is an identity set, so no {@code hashCode}). R1235's table named only
-     *  {@code toString} and {@code getLocalizedMessage} as driving members, so {@code e.printStackTrace()} on an
-     *  exception whose {@code getMessage} wrote a file read ABSENT (executed, javaab-a fx/x2). */
+    /** SOUNDNESS R1300 — the THROWABLE members whose JDK body prints the receiver ({@code printStackTrace()} and its
+     *  {@code PrintStream}/{@code PrintWriter} forms). Their re-entry is now a line of the site table; this predicate
+     *  remains for R1306's cause-chain disclosure, which is about the CAUSE chain, not this receiver. */
     static boolean isPrintStackTrace(String name, String desc) {
         return name.equals("printStackTrace") && (desc.equals("()V") || desc.equals("(Ljava/io/PrintStream;)V")
                 || desc.equals("(Ljava/io/PrintWriter;)V"));
     }
 
-    /** {@link #jdkReentryTarget}, with every body the JDK body re-enters (one for the {@code Object}/{@code Throwable}
-     *  string members, two for {@link #isPrintStackTrace}). */
+    /** Whether a CHA over {@code owner} takes each subtype's JDK re-entry (call-target round 2). Over a PROJECT or
+     *  dependency owner, and over a JDK CLASS (`InputStream in; in.read(b)` — R32's own shape: every candidate is a
+     *  subclass of the class whose body the call names), always. Over a JDK INTERFACE (`List l; l.contains(o)`), only
+     *  for the root types' members ({@code Object}'s protocol, a {@code Throwable}'s string members — where R1235/R1300
+     *  always applied it): the interface names no body, its project implementors come from unrelated hierarchies, and
+     *  the R1166 parameter contract that might narrow them does not see a re-entered body
+     *  (ArgContractR1166Test#auditPropertiesHoldInOneTree pins `hasL(new ArrayList<>(..))`). Measured on the published
+     *  engine: the same shape with a DECLARED `contains` override is charged — so this holds the re-entered spelling
+     *  at the precision the suite pins, below the declared one's. */
+    static boolean reentryOverOwner(String owner, String name, String desc) {
+        if (!JdkSites.isJdk(owner)) return true;
+        if (Candor.isObjectProtocolExempt(name, desc)) return true;
+        if (JdkSites.at("java/lang/Throwable", name, desc) != null
+                && (owner.equals("java/lang/Throwable") || Candor.transSupers(owner).contains("java/lang/Throwable"))) return true;
+        return !jdkInterface(owner);
+    }
+    private static final Map<String, Boolean> JDK_IFACE = new java.util.concurrent.ConcurrentHashMap<>();
+    static boolean jdkInterface(String owner) {
+        return JDK_IFACE.computeIfAbsent(owner, o -> {
+            try { return Class.forName(o.replace('/', '.'), false, ClassLoader.getPlatformClassLoader()).isInterface(); }
+            catch (Throwable e) { return true; }   // unloadable: read as an interface (no re-entry), the pre-table answer
+        });
+    }
+
+    /** The in-scan bounded-CHA rule as one predicate: a candidate set is edged when it is within the bound or the
+     *  hierarchy is closed (the rule {@link #chaTargets}' own callers apply). The JDK site table's hooks ask this,
+     *  rather than writing a sixth copy of the comparison. */
+    static boolean inBound(List<String> cands, String owner) {
+        return cands.size() <= Rules.CHA_FANOUT_LIMIT || isClosedHierarchy(owner);
+    }
+
+    /** The bodies the JDK body re-enters ({@link JdkSites#reentryOnThis}). */
     static List<String> jdkReentryTargets(String internal, String name, String desc) {
-        boolean pst = isPrintStackTrace(name, desc);
-        if (pst) {
-            if (!throwableJdkBody(internal)) return List.of();
-            List<String> out = new ArrayList<>();
-            String t = monomorphicTarget(internal, "toString", "()Ljava/lang/String;");
-            if (t != null) out.add(t);
-            String g = monomorphicTarget(internal, "getCause", "()Ljava/lang/Throwable;");
-            if (g != null && !out.contains(g)) out.add(g);
-            if (R1235_DEBUG && !out.isEmpty()) System.err.println("R1300\t" + internal + "." + name + desc + "\t" + out);
-            return out;
-        }
-        String one = jdkReentryTarget0(internal, name, desc);
-        return one == null ? List.of() : List.of(one);
+        List<String> out = JdkSites.reentryOnThis(internal, name, desc);
+        if (R1235_DEBUG && !out.isEmpty()) System.err.println("R1235\t" + internal + "." + name + desc + "\t" + out);
+        return out;
     }
 
-    /** The first class past {@code internal}'s project chain is a {@code java.*} Throwable — so the body that runs for
-     *  a member no project class declares is the JDK's own (the rule {@link #jdkReentryTarget0} applies). */
-    private static boolean throwableJdkBody(String internal) {
-        AnalysisContext c = ctx();
-        String x = internal;
-        for (ClassNode cn; (cn = c.byName.get(x)) != null; x = cn.superName) {
-            if ((cn.access & Opcodes.ACC_INTERFACE) != 0 || cn.superName == null) return false;
-        }
-        if (x.equals(internal)) return false;
-        return x.startsWith("java/") && (x.equals("java/lang/Throwable")
-                || Candor.transSupers(x).contains("java/lang/Throwable"));
+    /** The bodies a call of {@code name+desc} on an instance of project class {@code internal} that does not declare
+     *  it runs: the nearest project superclass declaration, else every body the JDK one re-enters. The LIST form of
+     *  {@link #nearestConcreteSuper}, for a site that edges (a JDK body can re-enter more than one member). */
+    static List<String> concreteTargets(String internal, String name, String desc) {
+        String m = nearestConcreteSuperNoReentry(internal, name, desc);
+        return m != null ? List.of(m) : jdkReentryTargets(internal, name, desc);
     }
 
-    private static String jdkReentryTarget0(String internal, String name, String desc) {
-        boolean toStr = name.equals("toString") && desc.equals("()Ljava/lang/String;");
-        boolean locMsg = name.equals("getLocalizedMessage") && desc.equals("()Ljava/lang/String;");
-        if (!toStr && !locMsg) return null;
-        AnalysisContext c = ctx();
-        String x = internal;
-        for (ClassNode cn; (cn = c.byName.get(x)) != null; x = cn.superName) {
-            if ((cn.access & Opcodes.ACC_INTERFACE) != 0 || cn.superName == null) return null;
-        }
-        if (x.equals(internal)) return null;                     // not a project class: nothing of ours runs
-        String[] driven = null;
-        if (toStr && x.equals("java/lang/Object")) driven = new String[] {"hashCode", "()I"};
-        else if (x.startsWith("java/") && (x.equals("java/lang/Throwable")
-                || Candor.transSupers(x).contains("java/lang/Throwable")))
-            driven = toStr ? new String[] {"getLocalizedMessage", "()Ljava/lang/String;"}
-                           : new String[] {"getMessage", "()Ljava/lang/String;"};
-        if (driven == null) return null;
-        if (R1235_DEBUG) System.err.println("R1235\t" + internal + "." + name + "\t" + x + "\t" + driven[0]);
-        return monomorphicTarget(internal, driven[0], driven[1]);
+    /** The LIST form of {@link #monomorphicTarget}. */
+    static List<String> monomorphicTargets(String recv, String name, String desc) {
+        ClassNode c = ctx().byName.get(recv);
+        if (c != null && declaresConcrete(c, name, desc)) return List.of(methodId(recv.replace('/', '.'), name, desc));
+        return concreteTargets(recv, name, desc);
     }
 
     static final boolean R1235_DEBUG = System.getenv("CANDOR_R1235_DEBUG") != null;

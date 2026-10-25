@@ -101,6 +101,7 @@ graalvmNative {
             // discloses, which is the one-artifact guard §L is about.
             buildArgs.add("-H:IncludeResources=candor/jdk-hof-invokes\\.idx\\.gz")
             buildArgs.add("-H:IncludeResources=candor/jdk-functional\\.idx\\.gz")   // SOUNDNESS R1092
+            buildArgs.add("-H:IncludeResources=candor/jdk-sites\\.idx\\.gz")        // call-target round 2: the JDK site table
             // SOUNDNESS R492/R727 — the GENERATED framework member -> effect table (FrameworkReach). Missing from
             // the image, the native binary would read every member it charges as silently pure again.
             buildArgs.add("-H:IncludeResources=candor/framework-reach\\.tsv")

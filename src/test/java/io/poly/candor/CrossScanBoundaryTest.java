@@ -4,6 +4,7 @@ import io.poly.candor.model.EffectSet;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static io.poly.candor.TestCompiler.compileApp;
 import static io.poly.candor.TestCompiler.rm;
@@ -1196,10 +1197,12 @@ class CrossScanBoundaryTest {
             Loader.loadCrossDeps(rep.toString(), "x");
             assertEquals(List.of("java/io/Writer"), Cha.depDirectSupers("lib/LoudWriter"),
                     "the sidecar beside a report named as a FILE was not read");
-            assertTrue(Candor.isJavaIoStreamType("lib/LoudWriter"),
-                    "a dep type extending java.io.Writer must now answer as a stream");
-            assertFalse(Candor.isJavaIoStreamType("lib/Ledger"),
-                    "a dep type with a non-stream ancestor must not answer as a stream");
+            // call-target round 2: the question is now "which JDK body runs for this member" (JdkSites), walked up the
+            // same sidecar — R32's isJavaIoStreamType gate is deleted with the hand table it gated
+            assertEquals("java/io/Writer", JdkSites.depContext(AnalysisState.ctx(), "lib/LoudWriter", "write",
+                    "(Ljava/lang/String;)V", new boolean[1]), "a dep type extending java.io.Writer runs Writer's write(String)");
+            assertNull(JdkSites.depContext(AnalysisState.ctx(), "lib/Ledger", "write", "(Ljava/lang/String;)V", new boolean[1]),
+                    "a dep type with a non-JDK ancestor names no JDK body");
             assertEquals(List.of(), Cha.depDirectSupers("lib/Unlisted"),
                     "a type the sidecar does not mention keeps the empty pre-sidecar answer");
             // THE SCOPE, asserted rather than described: the sidecar must NOT reach the project subtype

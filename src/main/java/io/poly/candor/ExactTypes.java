@@ -231,11 +231,29 @@ final class ExactTypes {
             if (t.equals(PURE) || t.equals(LAMBDA) && !name.equals("compareTo")) { o.resolvedSome = true; continue; }
             if (t.equals(LAMBDA)) { o.topOwners.add(topOwner); continue; }
             if (t.equals(TOP)) { o.topOwners.add(topOwner); continue; }
+            // SOUNDNESS R1235 / call-target round 2 — the JDK body that runs may dispatch back on this receiver
+            // (Object.toString runs this.hashCode(), Throwable.toString this.getLocalizedMessage()): the site table's
+            // bodies. A CLOSED line is the whole answer, as the R1235 table was; an OPEN one (it also runs user code the
+            // table cannot name) adds what it names and still discloses
+            List<String> re = reentry(t, name, desc);
+            if (!re.isEmpty()) {
+                o.bodies.addAll(re);
+                if (JdkSites.closedOnThis(t, name, desc)) o.resolvedSome = true;
+                else o.topOwners.add(topOwner);
+                continue;
+            }
             String b = body(t, name, desc);
             if (b == null) { o.topOwners.add(topOwner); continue; }
             o.resolvedSome = true;
             if (!b.isEmpty()) o.bodies.add(b);
         }
+    }
+
+    /** The bodies a JDK body re-enters on an instance of exactly project class {@code t} that declares no body of its
+     *  own for the member (empty otherwise). */
+    static List<String> reentry(String t, String name, String desc) {
+        if (PURE_JDK.contains(t) || JdkSites.projectBody(t, name, desc) != null) return List.of();
+        return Cha.jdkReentryTargets(t, name, desc);
     }
 
     /** JDK classes whose {@code equals}/{@code hashCode}/{@code toString}/{@code compareTo} run no user code. */
@@ -255,10 +273,7 @@ final class ExactTypes {
         while (cur != null) {
             ClassNode cn = c.byName.get(cur);
             if (cn == null) {
-                // SOUNDNESS R1235 — the JDK body that runs may dispatch back on this receiver: Object.toString runs
-                // this.hashCode(), Throwable.toString this.getLocalizedMessage() (Cha#jdkReentryTarget)
-                String re = Cha.jdkReentryTarget(t, name, desc);
-                if (re != null) return re;
+                // (a JDK body's re-entry was answered by #reentry before this walk)
                 if (!cur.equals("java/lang/Object") && !cur.equals("java/lang/Enum")) return null;
                 if (!name.equals("compareTo")) return "";
                 if (cur.equals("java/lang/Enum")) return "";

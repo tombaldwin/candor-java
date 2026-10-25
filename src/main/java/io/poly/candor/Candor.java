@@ -4517,10 +4517,8 @@ public class Candor {
             if (sub.equals(cn.name)) continue;
             ClassNode sc = ctx.byName.get(sub);
             if (sc == null || !bridgeResolvesTo(sub, mn.name, mn.desc, cn.name)) continue;
-            String t = declaresConcrete(sc, min.name, min.desc)
-                    ? methodId(sub.replace('/', '.'), min.name, min.desc)
-                    : nearestConcreteSuper(sub, min.name, min.desc);
-            if (t != null) keep.add(t);
+            if (declaresConcrete(sc, min.name, min.desc)) keep.add(methodId(sub.replace('/', '.'), min.name, min.desc));
+            else keep.addAll(Cha.concreteTargets(sub, min.name, min.desc));
         }
         Set<String> edges = ctx.edges.get(id);
         List<String> dropped = new ArrayList<>();
@@ -5070,10 +5068,16 @@ public class Candor {
             // reported pure; the runtime oracle caught the escaped Clock). Resolve to the nearest superclass
             // that actually DECLARES the method, exactly as the virtual path does; fall back to the raw owner
             // when it declares the method itself or the target is unresolvable (external / not loaded).
-            String special = declaresConcrete(ctx.byName.get(min.owner), min.name, min.desc)
-                    ? methodId(owner, min.name, min.desc)
-                    : nearestConcreteSuper(min.owner, min.name, min.desc);
-            ctx.edges.get(id).add(special != null ? special : methodId(owner, min.name, min.desc));
+            // call-target round 2: a super call that reaches a JDK body runs it on THIS, so the bodies it re-enters are
+            // resolved on the caller's class and its subclasses (JdkSites#superReentryTargets), not on the owner
+            String nearest = declaresConcrete(ctx.byName.get(min.owner), min.name, min.desc) ? methodId(owner, min.name, min.desc)
+                    : Cha.nearestConcreteSuperNoReentry(min.owner, min.name, min.desc);
+            List<String> special = nearest != null ? List.of(nearest)
+                    : op == Opcodes.INVOKESPECIAL && !min.name.startsWith("<")
+                            ? JdkSites.superReentryTargets(ctx, id, JdkSites.jdkContext(min.owner), min.name, min.desc)
+                            : Cha.concreteTargets(min.owner, min.name, min.desc);
+            if (special.isEmpty()) ctx.edges.get(id).add(methodId(owner, min.name, min.desc));
+            else ctx.edges.get(id).addAll(special);
             // PRIVATE FUNCTIONAL-PARAM FORWARDING (collect): record the lambda this site passes
             // to a private functional-param sink (or mark it opaque) — resolved in runScan.
             collectForwardingArg(owner, min, provFrames == null ? null : provFrames[mn.instructions.indexOf(min)]);
@@ -5705,9 +5709,13 @@ public class Candor {
                     // are erased on the stack, so resolve them from the array-fill AASTOREs.
                     reentryFormatVarargs(id, mn, min, provFrames);
                 } else {
-                    // valueOf/Objects.toString/append(Object)/print(Object): the lone Object arg.
-                    for (ProvValue a : callArgs(rf, min)) reentryEdgeOrDisclose(id, a, C_TOSTRING);
-                    objectOperands(s, min, Type.getArgumentTypes(min.desc));   // SOUNDNESS R1217
+                    // valueOf/Objects.toString/append(Object)/print(Object)/a logger: the arguments the sink stringifies
+                    // (the site table's toString hooks for a JDK owner; every argument of a logging facade)
+                    int[] ts = toStringSinkArgs(min.owner, min.name, min.desc);
+                    Type[] at = Type.getArgumentTypes(min.desc), only = new Type[at.length];
+                    java.util.Arrays.fill(only, Type.INT_TYPE);
+                    for (int j : ts) { reentryEdgeOrDisclose(id, callArg(rf, min, j), C_TOSTRING); if (j < at.length) only[j] = at[j]; }
+                    objectOperands(s, min, only);   // SOUNDNESS R1217
                 }
             }
             // SOUNDNESS R1305 — a JDK Throwable constructor that stringifies its cause (`new RuntimeException(e)` runs
@@ -5785,18 +5793,27 @@ public class Candor {
             // FileOutputStream has no LOCAL append/write override → contributes nothing).
             String sinkContract = formatterSinkCtor(min.owner, min.name, min.desc);
             if (sinkContract != null) reentryEdge(id, callArg(rf, min, 0), sinkContract);
-            // R32 — a DIRECT call to a concrete PROVIDED java.io method (`w.write(String)` / `w.append(..)` /
-            // `r.read(char[])`) whose JDK body drives the abstract required method on the RECEIVER. The
-            // receiver's own abstract override is reached only THROUGH the non-local provided overload, so
-            // otherwise it was silent (the direct sibling of the facade case above, which drives the ARG).
-            // Gated on the RECEIVER's type being a java.io stream (so a coincidental project `write`/`read`
-            // never triggers) then resolve-or-skip over its declType — a std FileWriter /
-            // ByteArrayOutputStream has no LOCAL write/read override → contributes nothing.
-            String recvContract = ioDriverContract(min.name);
-            if (recvContract != null) {
+            // R32 — a call whose body is a JDK one driving another member on the RECEIVER (`w.write(String)` runs the
+            // required `write(char[],int,int)`; `in.skip(n)` runs `read`). In-scan this is the CHA walk's own question
+            // (Cha#jdkReentryTargets, per receiver subtype, from the site table). Across the scan boundary — a
+            // dependency-typed receiver — it is asked here, and only where the dependency does not override the called
+            // member itself (call-target round 2: the hand table that keyed on the NAME `skip*`/`read*`/`write*` fired
+            // on xz's SeekableInputStream, whose own `skip` never calls `read`, SOUNDNESS R1441).
+            if (min.getOpcode() == Opcodes.INVOKEVIRTUAL || min.getOpcode() == Opcodes.INVOKEINTERFACE) {
                 ProvValue recv = receiverProv(rf, min);
-                if (recv != null && isJavaIoStreamType(recv.declType)) reentryEdge(id, recv, recvContract);
+                String rt = recv != null && recv.declType != null ? recv.declType : min.owner;
+                JdkSites.depReceiverReentry(ctx(), id, rt, min.name, min.desc);
+                // …and in-scan, R32's BOUND EXEMPTION for a java.io stream receiver: every candidate class's body for the
+                // called member, unbounded, as the deleted table always edged it (see JdkSites#streamReceiver)
+                JdkSites.streamReceiver(ctx(), id, rt, min.name, min.desc);
             }
+            // a `super.m()` into a JDK body runs it on THIS (`super.append(c)` -> Writer.append -> this.write(int)): its
+            // THIS hooks resolve on the caller's class and its project subclasses (R32 reached these by name)
+            if (min.getOpcode() == Opcodes.INVOKESPECIAL && !min.name.startsWith("<") && JdkSites.isJdk(min.owner))
+                JdkSites.superReentry(ctx(), id, min);
+            // call-target round 2 — the JDK site table's ARGUMENT hooks: a JDK body that runs a member of a value it
+            // was handed (`new ArrayList<>(c)` runs c.toArray(); `oos.writeObject(o)` runs o's private writeObject)
+            JdkSites.argumentHooks(ctx(), id, min, rf);
         }
     }
 
@@ -5824,7 +5841,7 @@ public class Candor {
     }
 
     /** SOUNDNESS R1305 — the arguments a JDK {@code Throwable} constructor runs {@code toString()} on
-     *  ({@link Rules#THROWABLE_CTOR_TOSTRING}); empty for any other instruction. */
+     *  (the derived JDK site table, {@link JdkSites#argsHooking}); empty for any other instruction. */
     static final boolean R1306 = !"0".equals(System.getenv("CANDOR_R1306"));
 
     /** SOUNDNESS R1337 — A STRINGIFIED CAUSE THAT IS THIS BODY'S OWN PARAMETER, DECLARED BY AN OPEN JDK TYPE, IS NOT
@@ -5851,8 +5868,9 @@ public class Candor {
     static int[] throwableCtorStringified(MethodInsnNode min) {
         if (min.getOpcode() != Opcodes.INVOKESPECIAL || !min.name.equals("<init>") || !min.owner.startsWith("java/"))
             return NO_ARGS;
-        int[] r = Rules.THROWABLE_CTOR_TOSTRING.get(min.owner + "." + min.desc);
-        return r == null ? NO_ARGS : r;
+        // call-target round 2: from the derived JDK site table (formerly Rules.THROWABLE_CTOR_TOSTRING, R1305) — every
+        // JDK constructor whose body runs toString() on an argument, a Throwable's cause among them
+        return JdkSites.argsHooking(min.owner, "<init>", min.desc, "toString()Ljava/lang/String;");
     }
     private static final int[] NO_ARGS = new int[0];
 
@@ -7235,13 +7253,14 @@ public class Candor {
                 // A provably-monomorphic PROJECT receiver (`new T`) has NO polymorphic siblings,
                 // so this resolves to exactly T's method — never its CHA subtypes. `b = new
                 // Base(); b.compute()` must read Base.compute alone, not the sibling Dirty's Net.
-                String monoTarget = monomorphicTarget(monoRecv, min.name, min.desc);
-                if (monoTarget != null) {
-                    // A concrete impl IS visible in T's own (project) chain: resolved locally, so
-                    // skip CHA, the Unknown branches, AND cross-dep (a project call traces locally,
-                    // never inherits a dep) — the original `continue`.
-                    ctx.edges.get(id).add(monoTarget);
-                    return true;
+                List<String> monoTargets = Cha.monomorphicTargets(monoRecv, min.name, min.desc);
+                // call-target round 2: a JDK body's re-entry (the site table) is EDGED for every receiver; it RESOLVES the
+                // call — skipping CHA, the Unknown branches and cross-dep, the original `continue` — only where a project
+                // body is visible in T's chain or the table's line is CLOSED (the whole set of user code it runs)
+                boolean projectBody = JdkSites.projectBody(monoRecv, min.name, min.desc) != null;
+                if (!monoTargets.isEmpty()) {
+                    ctx.edges.get(id).addAll(monoTargets);
+                    if (projectBody || JdkSites.closedOnThis(monoRecv, min.name, min.desc)) return true;
                 }
                 // No concrete impl in T's own chain — the JVM still resolves this to exactly ONE
                 // body (monomorphic, so CHA's sibling fan-out is still correctly skipped below via
@@ -7366,6 +7385,19 @@ public class Candor {
                         && !chaTargets(rv.declType, min.name, min.desc).isEmpty()) chaOwner = rv.declType;
             }
             List<String> cha = chaTargets(chaOwner, min.name, min.desc);
+            // call-target round 2: the JDK re-entry of a member that is NOT part of the CHA answer (Cha#pricedReentry) —
+            // `t.contains(x)` over project AbstractList subtypes runs their get/size — decided beside it: edged within
+            // the bound; past it, by the floor after the fixpoint, as R1306 decides a held toString (disclosed where some
+            // re-entered body carries an effect the caller lacks; fifteen pure overrides stay pure). An Object-protocol
+            // member is ExactTypes' to decide, from the receiver's producers.
+            if (!ExactTypes.covers(min.name, min.desc)) {
+                List<String> extra = Cha.extraReentry(chaOwner, min.name, min.desc);
+                if (!extra.isEmpty()) {
+                    if (Cha.inBound(extra, chaOwner)) ctx.edges.get(id).addAll(extra);
+                    else ctx.argContractFloor.computeIfAbsent(id, k -> new TreeSet<>())
+                            .add(chaOwner + "." + min.name + min.desc + "\t" + chaOwner + "\tS4");
+                }
+            }
             // ⟨0.39⟩ SPEC §4 obligation 1 — RECORD THE DISPATCHED MEMBER, whatever the CHA answers.
             // REGARDLESS OF `broad`, of `targets`, and of whether this site ends up disclosing an Unknown:
             // the toggle R475 names runs between ZERO implementers (a disclosed Unknown, which the branches
@@ -8847,14 +8879,16 @@ public class Candor {
         // union of a member whose every implementor is pure, so the walk would pass a member the interface
         // DECLARES and charge or hedge its super-interfaces. The interface hole is untypedDepReceiver's
         // (R533), which already discloses `j.d()` on an inherited default; this walk adds nothing there.
-        if (min.getOpcode() == Opcodes.INVOKEINTERFACE) return;
         // P6 (SOUNDNESS R1377/R1333): no hierarchy sidecar for the owner's report — an absent key may be inherited, and
         // the walk that would say so cannot run (CallTargets#discloseUncovered). A DISPATCH only: an inherited static or
-        // a super call through a sidecar-less report is left as it was (the report's silence under the key it formed)
-        if (!min.name.startsWith("<") && min.getOpcode() == Opcodes.INVOKEVIRTUAL) {
+        // a super call through a sidecar-less report is left as it was (the report's silence under the key it formed).
+        // Asked BEFORE the interface return below (call-target round 2, FABLE-REVIEW §1.4): a sidecar-less
+        // `invokeinterface dep/I.m` was the one dispatch spelling that degraded to silence instead of a ledger line
+        if (!min.name.startsWith("<") && (min.getOpcode() == Opcodes.INVOKEVIRTUAL || min.getOpcode() == Opcodes.INVOKEINTERFACE)) {
             DepFn at = ctx.crossDeps.get(min.owner + "." + min.name + min.desc);
             if (at == null || !at.ownerDeclared) CallTargets.discloseUncovered(ctx, id, min.owner);
         }
+        if (min.getOpcode() == Opcodes.INVOKEINTERFACE) return;
         DepUpWalk w = depUpWalk(ctx, min.owner, min.name, min.desc);
         for (DepFn d : w.joins()) {
             if (R868_DEBUG) System.err.println("R868\tUP\t" + id + "\t" + min.owner + "." + min.name + min.desc
@@ -9766,7 +9800,6 @@ public class Candor {
             }
             case C_APPEND: return ret.startsWith("L");
             case C_WRITE: return ret.equals("V");
-            case C_READ: return ret.equals("I");
             // A by-NAME contract added later and not listed here is admitted, not dropped. This switch is a
             // DENYLIST of shapes proven not to be the contract; as an allowlist it would silently under-report
             // whatever the next contract is, which is the cardinal sin wearing a guard's clothes.
@@ -10778,53 +10811,9 @@ public class Candor {
      *  Object whose contract is re-entered. Resolution is by the sink's owner+name+desc. */
     static final String C_TOSTRING = "toString", C_EQUALS = "equals", C_HASHCODE = "hashCode", C_COMPARETO = "compareTo";
     static final String C_APPEND = "append", C_WRITE = "write";   // the WRITER side (R16): Appendable.append / Writer/OutputStream.write
-    static final String C_READ = "read";   // the READER side (R32): Reader/InputStream.read driven by a concrete provided overload
 
-    /** A DIRECT call to a concrete PROVIDED java.io method whose JDK body drives the abstract required
-     *  method on the RECEIVER: `w.write(String)`/`w.append(..)`/`w.write(int)` → the abstract
-     *  `Writer.write(char[],int,int)` override (C_WRITE); `r.read(char[])`/`r.skip(..)`/`in.transferTo(..)`
-     *  → the abstract `Reader.read(char[],int,int)`/`InputStream.read()` override (C_READ). candor never
-     *  descends into the JDK provided method, so a CUSTOM effectful subclass reached ONLY via a provided
-     *  overload read silent-pure (R32 — the direct sibling of the R16 formatting-facade case; the facade
-     *  drives the SINK ARG, this drives the RECEIVER). The driver contract for a name, or null. NOTE: keyed
-     *  on the receiver's TYPE (a java.io stream base ancestor), NOT on `min.owner` — an `invokevirtual` owns
-     *  the inherited overload at the receiver's STATIC type, which is usually the project subclass
-     *  (`W$LoudWriter`), not the JDK base. Redundantly firing on the abstract override itself only adds the
-     *  same edge normal CHA already resolves (a harmless dup). */
-    static String ioDriverContract(String name) {
-        if (name.startsWith("write") || name.equals("append")) return C_WRITE;
-        if (name.startsWith("read") || name.startsWith("skip") || name.equals("transferTo")) return C_READ;
-        return null;
-    }
-
-    /** Whether `internal` IS, or transitively EXTENDS, one of the four abstract java.io stream bases whose
-     *  concrete provided methods drive an abstract required method (Writer/Reader/InputStream/OutputStream).
-     *  Gates the R32 receiver reentry so only a genuine stream type resolves — a project class with a
-     *  coincidental `write`/`read` method (no io ancestor) never triggers it. */
-    static boolean isJavaIoStreamType(String internal) {
-        if (internal == null) return false;
-        if (IO_STREAM_BASES.contains(internal)) return true;
-        for (String s : transSupers(internal)) if (IO_STREAM_BASES.contains(s)) return true;
-        // A CHAINED DEPENDENCY'S type: candor's classpath cannot load it, so `transSupers` reads nothing and
-        // this answered "not a stream" for every dep type — which is why the receiver-driven `w.write(..)`
-        // reentry could not cross the scan boundary. The dep published its own hierarchy beside its report.
-        // Kept as a SECOND walk rather than folded into `transSupers`, because that one feeds the project
-        // subtype index (see Cha#depDirectSupers): the question here is only ever about a dep type, and
-        // answering it must not change how a project type's dispatch resolves.
-        if (ctx().depSupers.isEmpty()) return false;
-        Set<String> seen = new HashSet<>();
-        ArrayDeque<String> q = new ArrayDeque<>(ctx().depSupers.getOrDefault(internal, List.of()));
-        while (!q.isEmpty()) {
-            String t = q.poll();
-            if (!seen.add(t)) continue;
-            if (IO_STREAM_BASES.contains(t)) return true;
-            q.addAll(Cha.depDirectSupers(t));
-        }
-        return false;
-    }
-
-    static final Set<String> IO_STREAM_BASES = Set.of(
-            "java/io/Writer", "java/io/Reader", "java/io/InputStream", "java/io/OutputStream");
+    // (SOUNDNESS R32's receiver table — ioDriverContract / isJavaIoStreamType / IO_STREAM_BASES — is deleted: the JDK
+    // site table answers which member a provided java.io overload drives, per receiver, see JdkSites.)
 
     /** If `min` constructs a JDK formatting facade WRAPPING a sink, the writer-side reentry contract for that
      *  sink (C_APPEND / C_WRITE); else null. `new Formatter(Appendable)` drives append; `new PrintWriter(
@@ -10839,20 +10828,35 @@ public class Candor {
         return null;
     }
 
+    /** The arguments a call runs {@code toString()} on, as a string sink: for a JDK owner, the derived JDK site table's
+     *  {@code toString} hooks (call-target round 2 — it replaced the hand list of {@code String.valueOf(Object)},
+     *  {@code Objects.toString}, {@code StringBuilder/StringBuffer.append(Object)}, {@code PrintStream/PrintWriter
+     *  print/println(Object)}, and names every other JDK body that stringifies an argument); for a logging facade, every
+     *  argument (the clause below). A constructor is not a string sink here: the R1305 path decides it
+     *  ({@link #throwableCtorStringified}), with R1337's parameter rule. */
+    static int[] toStringSinkArgs(String owner, String name, String desc) {
+        if (desc == null || name.equals("<init>")) return NO_ARGS;
+        if (JdkSites.isJdk(owner)) {
+            int[] r = JdkSites.argsHooking(owner, name, desc, "toString()Ljava/lang/String;");
+            if (r.length > 0) return r;
+        }
+        if (loggingClause(name, desc)) {
+            int[] all = new int[Type.getArgumentTypes(desc).length];
+            for (int i = 0; i < all.length; i++) all[i] = i;
+            return all;
+        }
+        return NO_ARGS;
+    }
+
     static boolean isToStringSink(String owner, String name, String desc) {
         if (desc == null) return false;
-        // String.valueOf(Object) / String.format(...) / Objects.toString(Object[,String])
-        if (owner.equals("java/lang/String"))
-            return (name.equals("valueOf") && desc.equals("(Ljava/lang/Object;)Ljava/lang/String;"))
-                || name.equals("format");
-        if (owner.equals("java/util/Objects") && name.equals("toString")) return true;
-        // StringBuilder/StringBuffer.append(Object) (the (CharSequence)/(String)/(char[]) overloads do NOT
-        // stringify via toString; only the (Object) one does).
-        if ((owner.equals("java/lang/StringBuilder") || owner.equals("java/lang/StringBuffer"))
-                && name.equals("append") && desc.equals("(Ljava/lang/Object;)L" + owner + ";")) return true;
-        // PrintStream/PrintWriter print/println(Object)
-        if ((owner.equals("java/io/PrintStream") || owner.equals("java/io/PrintWriter"))
-                && (name.equals("print") || name.equals("println")) && desc.equals("(Ljava/lang/Object;)V")) return true;
+        // String.format(...) packs its operands into an Object[] — decided by reentryFormatVarargs (the table's own
+        // line for it names the ELEMENTS of that array, `1[] toString`)
+        if (owner.equals("java/lang/String") && name.equals("format")) return true;
+        return toStringSinkArgs(owner, name, desc).length > 0;
+    }
+
+    // The logging clause of toStringSinkArgs, documented where it was written:
         // PARAMETERIZED LOGGING (slf4j/log4j2/commons-logging/JUL). `LOGGER.warn("...{}", entry)` hands the
         // argument to the logging library as an Object and the library calls toString() on it INSIDE its own
         // formatter, at format time — so nothing in the caller's bytecode names `toString`, the JDK-facade
@@ -10871,9 +10875,8 @@ public class Candor {
         // floored by `reentryEdge`, which resolves over the argument's declType and contributes NOTHING when
         // that type has no LOCAL toString override — so a String/boxed/JDK argument (the overwhelming
         // majority of log arguments) edges nowhere, and only a project type with its own toString does.
-        //
-        if (LOG_LEVEL_NAMES.contains(name) && desc.contains("Ljava/lang/Object;")) return true;
-        return false;
+    private static boolean loggingClause(String name, String desc) {
+        return LOG_LEVEL_NAMES.contains(name) && desc.contains("Ljava/lang/Object;");
     }
 
     /** {@link #isToStringSink}, with the parameterized-logging clause restricted to an owner that IS a logger.
@@ -11094,7 +11097,7 @@ public class Candor {
         // Appendable.append / Writer.write reached through a JDK formatting facade. Resolve to a project
         // subtype-or-self of declType declaring a concrete method of that name (any desc).
         if (contract.equals(C_COMPARETO) || contract.equals(C_APPEND) || contract.equals(C_WRITE)
-                || contract.equals(C_READ)) {
+) {
             Set<String> out = new LinkedHashSet<>();
             for (String cName : ctx().subtypeIndex.getOrDefault(declType, List.of())) {
                 if (ctx().byName.get(cName) == null) continue;

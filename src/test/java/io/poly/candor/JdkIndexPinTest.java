@@ -39,7 +39,7 @@ class JdkIndexPinTest {
 
     static final Path ROOT = Path.of(System.getProperty("user.dir"));
     static final Path DIR = ROOT.resolve("soundness/jdk_index");
-    static final List<String> INDEXES = List.of("jdk-supertypes.idx", "jdk-sams.idx", "jdk-hof-invokes.idx", "jdk-functional.idx");
+    static final List<String> INDEXES = List.of("jdk-supertypes.idx", "jdk-sams.idx", "jdk-hof-invokes.idx", "jdk-functional.idx", "jdk-sites.idx");
 
     static String sha(byte[] b) throws Exception {
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(b));
@@ -79,7 +79,7 @@ class JdkIndexPinTest {
     @Test
     void theGeneratorInputsHashToTheManifest() throws Exception {
         MessageDigest md = MessageDigest.getInstance("SHA-256");
-        for (String f : List.of("JdkIndexGen.java", "derive.sh", "images.tsv", "asm.tsv")) md.update(Files.readAllBytes(DIR.resolve(f)));
+        for (String f : List.of("JdkIndexGen.java", "JdkSiteGen.java", "derive.sh", "images.tsv", "asm.tsv")) md.update(Files.readAllBytes(DIR.resolve(f)));
         assertEquals(manifest().get("generator-sha256")[1], HexFormat.of().formatHex(md.digest()),
                 "the generator or its pinned inputs changed and the indexes were not regenerated: run "
                         + "`bash soundness/jdk_index/derive.sh`");

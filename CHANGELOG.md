@@ -11,6 +11,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## [0.40.17] — 2026-10-25
 
+- **`jbang-catalog.json` points at the v0.40.17 jar.**
+
 - ⚠ **One call-target entry point for dependency-typed receivers (call-target round 1; SOUNDNESS R1412, R1413,
   R1379, R1377, R1333).** "Which bodies can run here?" for a receiver declared as a dependency type was answered by
   separate walks, and the implicit sinks (string concatenation, `valueOf`, `append`, `format`, `println`, a cause

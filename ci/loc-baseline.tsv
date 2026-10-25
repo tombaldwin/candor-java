@@ -1,9 +1,9 @@
 # file	lines	decisions  (ci/loc-ratchet.py --update)
 src/main/java/io/poly/candor/AnalysisContext.java	678	43
 src/main/java/io/poly/candor/AnalysisState.java	47	0
-src/main/java/io/poly/candor/ArgContract.java	1243	477
-src/main/java/io/poly/candor/CallTargets.java	309	84
-src/main/java/io/poly/candor/Candor.java	12946	3084
+src/main/java/io/poly/candor/ArgContract.java	1243	476
+src/main/java/io/poly/candor/CallTargets.java	308	82
+src/main/java/io/poly/candor/Candor.java	12927	3067
 src/main/java/io/poly/candor/Cha.java	1110	208
 src/main/java/io/poly/candor/Classifier.java	4063	2495
 src/main/java/io/poly/candor/Config.java	541	79
@@ -16,7 +16,7 @@ src/main/java/io/poly/candor/FrameworkReach.java	214	51
 src/main/java/io/poly/candor/Interp.java	752	214
 src/main/java/io/poly/candor/KappaJdkSinks.java	372	252
 src/main/java/io/poly/candor/Literals.java	928	346
-src/main/java/io/poly/candor/Loader.java	1261	279
+src/main/java/io/poly/candor/Loader.java	1261	278
 src/main/java/io/poly/candor/Policy.java	2454	348
 src/main/java/io/poly/candor/Query.java	6115	1075
 src/main/java/io/poly/candor/Refresh.java	791	143

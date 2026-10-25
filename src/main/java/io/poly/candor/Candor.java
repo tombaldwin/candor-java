@@ -7691,7 +7691,7 @@ public class Candor {
                 // CALL-TARGETS — an Object-protocol member on a dependency (or hierarchy-less) owner asks the ONE entry
                 // point, which adds the consumer's own overriders (the declared half of U2: past the bound they read
                 // pure, the floor ran only for a receiver the caller produced) and the P6 disclosure.
-                if (CallTargets.ON && isObjectProtocolExempt(min.name, min.desc) && CallTargets.outsideScan(ctx, min.owner))
+                if (isObjectProtocolExempt(min.name, min.desc) && CallTargets.outsideScan(ctx, min.owner))
                     CallTargets.resolve(ctx, id, min.owner, min.name, min.desc, recv != null && !recv.equals(min.owner) ? recv : null,
                             CallTargets.Spelling.EXPLICIT, ctSite(mn, provFrames, min));
                 else depHierarchyJoin(ctx, id, min, inh, recv);
@@ -7706,23 +7706,16 @@ public class Candor {
                         && provFrames != null) {
                     Frame<ProvValue> rf = provFrames[mn.instructions.indexOf(min)];
                     ProvValue rv = rf == null ? null : receiverProv(rf, min);
-                    String dt = rv == null ? null : rv.declType;
                     // CALL-TARGETS — ROUTED: the consumer's own overriders (U2, SOUNDNESS R1413) join the dependency's
-                    String cdt = CallTargets.ON ? CallTargets.declTypeOf(ctx, rv, min) : null;
+                    // (the R1378 walk that stood here was depHierarchyJoin from the declared type, dependency half only)
+                    String cdt = CallTargets.declTypeOf(ctx, rv, min);
                     if (cdt != null) {
                         if (R867_DEBUG) System.err.println("R1378\tRETARGET\t" + id + "\t" + cdt + "." + min.name + min.desc);
                         CallTargets.resolve(ctx, id, cdt, min.name, min.desc, recv != null && !recv.equals(min.owner) ? recv : null,
                                 CallTargets.Spelling.RETARGET, ctSite(mn, provFrames, min));
-                    } else if (!CallTargets.ON && dt != null && !dt.equals(min.owner) && ctx.depIndexed.contains(dt)
-                            && !ctx.byName.containsKey(dt)) {
-                        MethodInsnNode rt = new MethodInsnNode(Opcodes.INVOKEVIRTUAL, dt, min.name, min.desc, false);
-                        DepFn inh2 = ctx.crossDeps.get(dt + "." + min.name + min.desc);
-                        if (inh2 != null && !inh2.walkOnly) inheritDepFn(id, inh2);
-                        if (R867_DEBUG) System.err.println("R1378\tRETARGET\t" + id + "\t" + dt + "." + min.name + min.desc);
-                        depHierarchyJoin(ctx, id, rt, inh2, recv != null && !recv.equals(min.owner) ? recv : null);
                     }
                 }
-            } else if (CallTargets.ON && xop == Opcodes.INVOKEINTERFACE && isObjectProtocolExempt(min.name, min.desc)
+            } else if (xop == Opcodes.INVOKEINTERFACE && isObjectProtocolExempt(min.name, min.desc)
                     && CallTargets.outsideScan(ctx, min.owner)) {
                 // CALL-TARGETS — ROUTED: an Object member through a dependency INTERFACE (SOUNDNESS R1379) is not the
                 // root type either, so it reaches the same bound and rule as the class spelling above
@@ -11234,23 +11227,11 @@ public class Candor {
         // CALL-TARGETS — ROUTED (U1, SOUNDNESS R1412): the sink asks the ONE entry point, which walks UP (what
         // nearestDepFn / nearestDepFnsNamed did here) AND DOWN the dependency's subtypes, so a dependency subtype's
         // override joins as it does for the explicit `t.toString()` (R867/R1378). The consumer's own overriders are
-        // the in-scan half above (reentryTargets), unbounded as in-scan. A type outside every walk keeps the old reads.
-        if (CallTargets.ON) {
-            resolved |= depDesc != null
-                    ? CallTargets.resolve(ctx(), callerId, declType, contract, depDesc, null, CallTargets.Spelling.SINK, null)
-                    : CallTargets.resolveNamed(ctx(), callerId, declType, contract);
-            return resolved;
-        }
-        if (depDesc != null) {
-            DepFn d = nearestDepFn(declType, contract, depDesc);
-            inheritDepFn(callerId, d);
-            resolved |= d != null;
-        } else {
-            for (DepFn d : nearestDepFnsNamed(declType, contract)) {
-                inheritDepFn(callerId, d);
-                resolved = true;
-            }
-        }
+        // the in-scan half above (reentryTargets), unbounded as in-scan. A type no dependency speaks for (a project class
+        // extending one) keeps the UP read inside CallTargets.
+        resolved |= depDesc != null
+                ? CallTargets.resolve(ctx(), callerId, declType, contract, depDesc, null, CallTargets.Spelling.SINK, null)
+                : CallTargets.resolveNamed(ctx(), callerId, declType, contract);
         return resolved;
     }
 

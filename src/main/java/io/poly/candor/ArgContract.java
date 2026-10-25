@@ -519,7 +519,7 @@ final class ArgContract {
             // CALL-TARGETS — ROUTED: a dependency-declared type's candidates are its dependency bodies too (UP and its
             // subtypes' overrides), the set CallTargets#resolve joins at the explicit spelling (h_sort: `sort(l)` over a
             // `List<dep.T>` whose dependency subtype's compareTo writes a file read pure chained, disclosed one-tree)
-            if (!hit && CallTargets.ON && CallTargets.outsideScan(c, t)) {
+            if (!hit && CallTargets.outsideScan(c, t)) {
                 CallTargets.discloseUncovered(c, caller, t);
                 for (DepFn d : CallTargets.dependencyBodies(c, t, name, desc))
                     if (newConcreteDep(fx, d, caller) || (unknownToo && d.effects.contains(Effect.UNKNOWN))) {

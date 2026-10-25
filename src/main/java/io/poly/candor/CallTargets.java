@@ -50,13 +50,12 @@ import org.objectweb.asm.tree.MethodNode;
  * (SOUNDNESS R1377 / R1333). Before this, the answering arm made the degraded arm look worse: the more the
  * sidecar-present scan resolves, the more deleting the sidecar silently deletes.
  *
- * <p><b>Kill switch</b>: {@code CANDOR_CT=0} restores every spelling's previous walk and the previous coverage rule —
- * the byte-identity control for the call-target matrix ({@code soundness/calltarget/}).
+ * <p>No kill switch: the old walks are deleted. The control that licensed that ({@code CANDOR_CT=0}, byte-identical to
+ * published 0.40.16 over the call-target matrix) is in the commit that introduced this class.
  */
 final class CallTargets {
     private CallTargets() {}
 
-    static final boolean ON = !"0".equals(System.getenv("CANDOR_CT"));
     static final boolean DEBUG = System.getenv("CANDOR_CT_DEBUG") != null;
 
     /** The spelling a site was written in — decides the past-bound rule (see the class doc), nothing else. */
@@ -103,13 +102,13 @@ final class CallTargets {
         if (t == null || c.byName.containsKey(t) || c.projectClasses.contains(t)) return false;
         if (c.depIndexed.contains(t) || hierarchyUncovered(c, t)) return true;
         int slash = t.lastIndexOf('/');
-        return ON && slash > 0 && !t.startsWith("java/") && c.depChainedPkgs.contains(t.substring(0, slash).replace('/', '.'));
+        return slash > 0 && !t.startsWith("java/") && c.depChainedPkgs.contains(t.substring(0, slash).replace('/', '.'));
     }
 
     /** P6: {@code t}'s package came from a chained report whose hierarchy sidecar was absent, and no sidecar names
      *  {@code t} — so no walk from {@code t} (UP, DOWN, EXACT) can be performed. */
     static boolean hierarchyUncovered(AnalysisContext c, String t) {
-        if (!ON || t == null || c.depHierUncoveredPkgs.isEmpty() || c.depIndexed.contains(t) || c.byName.containsKey(t))
+        if (t == null || c.depHierUncoveredPkgs.isEmpty() || c.depIndexed.contains(t) || c.byName.containsKey(t))
             return false;
         int slash = t.lastIndexOf('/');
         return slash > 0 && c.depHierUncoveredPkgs.contains(t.substring(0, slash).replace('/', '.'));

@@ -870,7 +870,7 @@ final class Loader {
                     JsonElement tc = obj != null && obj.has("candor") && obj.get("candor").isJsonObject()
                             ? obj.getAsJsonObject("candor").get("toolchain") : null;
                     boolean jvmProduced = tc != null && tc.isJsonPrimitive() && tc.getAsString().startsWith("jdk");
-                    boolean hierAbsent = CallTargets.ON && (fns.size() > 0 || jvmProduced)
+                    boolean hierAbsent = (fns.size() > 0 || jvmProduced)
                             && (hierSib == null || !Files.isRegularFile(hierSib));
                     if (hierAbsent) {
                         hierUncoveredReports.add(f);

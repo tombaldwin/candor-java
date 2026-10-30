@@ -164,6 +164,15 @@ final class ExactTypes {
                 // own parameter, whose callers are resolved by the argument they pass — ArgContract)
                 if (!broad) edges.addAll(cha);
                 else if (!cha.isEmpty() && kind.equals("D")) floor(caller, top, name, desc, "S4");
+                // call-target round 2: the re-entry decided beside the CHA answer (an OPEN line — AbstractCollection's
+                // toString runs a project subtype's iterator): in bound edged, past it the floor. Not over Object
+                // itself: an Object-wide re-entry of an OPEN line names every project collection's iterator for any
+                // `o.toString()` (ArgContractR1166Test's boxedNumber) — R1235 never went there either
+                List<String> extra = top.equals("java/lang/Object") ? List.of() : Cha.extraReentry(top, name, desc);
+                if (!extra.isEmpty()) {
+                    if (Cha.inBound(extra, top)) edges.addAll(extra);
+                    else if (kind.equals("D")) floor(caller, top, name, desc, "S4");
+                }
             } else if (SINK_TOP.equals("cha") && !broad) {
                 edges.addAll(cha);   // measurement arm only: what an explicit `o.toString()` does in bound
             } else if (!cha.isEmpty() && kind.equals("S")) {

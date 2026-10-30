@@ -11,7 +11,7 @@ src/main/java/io/poly/candor/DbClientSurface.java	573	38
 src/main/java/io/poly/candor/DbHandleFlow.java	1069	490
 src/main/java/io/poly/candor/DepFn.java	226	25
 src/main/java/io/poly/candor/ElementFlow.java	2864	1578
-src/main/java/io/poly/candor/ExactTypes.java	561	215
+src/main/java/io/poly/candor/ExactTypes.java	570	219
 src/main/java/io/poly/candor/Fallback.java	81	63
 src/main/java/io/poly/candor/FrameworkReach.java	214	51
 src/main/java/io/poly/candor/Interp.java	752	214

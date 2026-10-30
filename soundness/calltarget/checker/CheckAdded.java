@@ -127,7 +127,17 @@ public final class CheckAdded {
     static String hashOf(String owner, String name, String desc) { return owner + "." + name + desc; }
     static boolean carries(String owner, String name, String desc, String E) {
         Set<String> s = ROWS.get(hashOf(owner, name, desc));
-        return s != null && s.contains(E);
+        if (s != null && s.contains(E)) return true;
+        // a covariant override / its bridge: the same name and parameters, another return type (one row for both)
+        ClassNode c = CLS.get(owner);
+        if (c == null || desc.indexOf(')') < 0) return false;
+        String params = desc.substring(0, desc.indexOf(')') + 1);
+        for (MethodNode m : c.methods)
+            if (m.name.equals(name) && !m.desc.equals(desc) && m.desc.startsWith(params)) {
+                Set<String> t = ROWS.get(hashOf(owner, m.name, m.desc));
+                if (t != null && t.contains(E)) return true;
+            }
+        return false;
     }
 
     // ------------------------------------------------------------------------------------------- hierarchy
@@ -258,6 +268,22 @@ public final class CheckAdded {
         try { return explain(owner, mn, E); } finally { if (inject != null && !had) ROWS.get(inject).remove(E); }
     }
     static String explain(String owner, MethodNode mn, String E) {
+        // an ABSTRACT member's row is the producer's union over its implementors (SPEC ⟨0.23⟩): explained by one of them
+        if ((mn.access & Opcodes.ACC_ABSTRACT) != 0) {
+            String w = prop(Opcodes.INVOKEVIRTUAL, owner, mn.name, mn.desc, E);
+            return w == null ? null : "UNION " + w;
+        }
+        // class initialisation: a body of a class runs only once it (and every superclass) is initialised, and an
+        // invokestatic / NEW / static field touches the named class's <clinit> and its supers'
+        for (String x = owner; x != null && CLS.containsKey(x); x = CLS.get(x).superName)
+            if (carries(x, "<clinit>", "()V", E)) return "PROP clinit-own " + x;
+        for (AbstractInsnNode in : mn.instructions) {
+            String t = in instanceof MethodInsnNode mi && mi.getOpcode() == Opcodes.INVOKESTATIC ? mi.owner
+                    : in instanceof FieldInsnNode fi && (fi.getOpcode() == Opcodes.GETSTATIC || fi.getOpcode() == Opcodes.PUTSTATIC) ? fi.owner
+                    : in instanceof TypeInsnNode ti && ti.getOpcode() == Opcodes.NEW ? ti.desc : null;
+            for (String x = t; x != null && CLS.containsKey(x); x = CLS.get(x).superName)
+                if (carries(x, "<clinit>", "()V", E)) return "PROP clinit " + x;
+        }
         for (AbstractInsnNode in : mn.instructions) {
             if (in instanceof MethodInsnNode mi) {
                 String w = prop(mi.getOpcode(), mi.owner, mi.name, mi.desc, E);
@@ -333,8 +359,20 @@ public final class CheckAdded {
         }
         String up = resolveUp(owner, name, desc);
         if (up != null && carries(up, name, desc, E)) return "PROP up";
-        for (String s : subtypes(owner))
+        for (String s : subtypes(owner)) {
             if (concrete(declared(CLS.get(s), name, desc)) && carries(s, name, desc, E)) return "PROP cha";
+            // a subtype whose body for the member is a JDK one (a project Multiset inheriting AbstractCollection's
+            // containsAll): that JDK body's re-entered members on the subtype
+            String b = resolveUp(s, name, desc);
+            if (b != null && isJdk(b)) {
+                Set<String> rs = withDefaults(s, reachFor(s, b, name, desc));
+                for (String r : rs) {
+                    int lp = r.indexOf('(');
+                    String rb = resolveUp(s, r.substring(0, lp), r.substring(lp));
+                    if (rb != null && CLS.containsKey(rb) && carries(rb, r.substring(0, lp), r.substring(lp), E)) return "HOOK inherited " + b + "." + name + " on " + s;
+                }
+            }
+        }
         return null;
     }
     /** a subtype S of a slot type whose member, reached by the JDK body as it runs on S, carries E */

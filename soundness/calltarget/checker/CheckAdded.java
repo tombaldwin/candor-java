@@ -155,9 +155,17 @@ public final class CheckAdded {
         while (!q.isEmpty()) { String x = q.poll(); if (!seen.add(x)) continue; if (x.equals(t)) return true; q.addAll(supersOf(x)); }
         return false;
     }
+    static final Map<String, Set<String>> SUBTYPES = new HashMap<>();
     static Set<String> subtypes(String t) {
+        Set<String> memo = SUBTYPES.get(t);
+        if (memo != null) return memo;
         Set<String> out = new LinkedHashSet<>();
+        SUBTYPES.put(t, out);
         if (t.equals("java/lang/Object")) { out.addAll(CLS.keySet()); return out; }
+        if (!CLS.containsKey(t)) {   // a JDK type: a scanned class reaches it through JDK supertypes the SUBS index does not hold
+            for (String c : CLS.keySet()) if (isSubtype(c, t)) out.add(c);
+            return out;
+        }
         Deque<String> q = new ArrayDeque<>(List.of(t));
         while (!q.isEmpty()) { String x = q.poll(); if (!out.add(x)) continue; q.addAll(SUBS.getOrDefault(x, List.of())); }
         out.removeIf(x -> !CLS.containsKey(x));

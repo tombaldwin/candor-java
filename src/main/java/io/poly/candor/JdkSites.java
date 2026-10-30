@@ -247,7 +247,7 @@ final class JdkSites {
         for (var e : Table.MAP.entrySet()) {
             String k = e.getKey();
             int p = k.indexOf('('), dot = k.lastIndexOf('.', p);
-            if (!IO_STREAM_BASES.contains(k.substring(0, dot))) continue;
+            if (!streamType(k.substring(0, dot))) continue;   // a stream base or a JDK stream class (PrintStream)
             boolean thisHook = false;
             for (Hook h : e.getValue().hooks()) if (h.slot() == THIS && !h.elem()) { out.add(h.member()); thisHook = true; }
             if (thisHook) out.add(k.substring(dot + 1));

@@ -845,6 +845,13 @@ final class JdkSiteGen {
     /** The hand residual (see the class doc): native / reflective entry the bytecode does not show. */
     void residual(String x, String name, String desc, TreeSet<String> hs) {
         if (name.equals("start") && desc.equals("()V") && isSub(x, "java/lang/Thread") && extendable(classes.get(x))) hs.add("t run()V");
+        // a PrintStream formats through an OutputStreamWriter its constructor wrapped around THIS (charOut/textOut), so
+        // every text member ends in this.write(byte[],int,int): a chain through fields built in the constructor, which
+        // the summary does not follow (a field-held allocation's bindings are not carried) — named here instead
+        if (isSub(x, "java/io/PrintStream") && extendable(classes.get(x))
+                && (name.equals("print") || name.equals("println") || name.equals("append") || name.equals("format")
+                    || name.equals("printf") || name.equals("write") && desc.startsWith("(Ljava/lang/String;")))
+            hs.add("t write([BII)V");
         if (x.equals("java/io/ObjectOutputStream") && (name.equals("writeObject") || name.equals("writeUnshared"))
                 && desc.equals("(Ljava/lang/Object;)V")) {
             hs.add("0 #writeObject(Ljava/io/ObjectOutputStream;)V");

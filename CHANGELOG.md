@@ -9,6 +9,24 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **The JDK site table: which overridable members a JDK body runs is derived from the JDK's own bytecode
+  (call-target round 2; SOUNDNESS R1242, R1406, R1441, R32, R1235, R1300, R1305).** `soundness/jdk_index/JdkSiteGen`
+  summarises every public JDK member, as seen from the receiver class it runs on, into `jdk-sites.idx.gz` (the nine
+  pinned Temurin 17/21/25 images; `derive.sh --check` reproduces it, `JdkIndexPinTest` pins it): the overridable
+  members its body invokes on `this` and on each argument, with guards naming the defaults it followed. `JdkSites`
+  reads it wherever a hand table stood. Newly charged, executed in the call-target matrix: a project subclass of a
+  collection skeleton (`AbstractList.contains` runs its `get`/`size`, `AbstractCollection.toString` its `iterator`,
+  `AbstractMap.get` its `entrySet`), a `Thread` subclass's `run` from `start()`, serialization's private
+  `writeObject`, `new ArrayList<>(c)` running `c.toArray()`, a `super.m()` into a JDK body. **No longer charged:** a
+  provided `java.io` overload the receiver overrides (`skip` no longer re-enters `read` — SOUNDNESS R1441, the xz
+  `SeekableInputStream` `Unknown`s), and R32's by-name edges to every `read*`/`write*` of a stream hierarchy for a
+  call that runs one of them (an `in.read()` is not an `in.read(byte[])`; `new BufferedReader(..).readLine()` is not a
+  project `BufferedReader` subclass's `read`). **Deleted:** the R1235/R1300 driving-member table, R32's by-name receiver
+  table, R1305's 82-row `THROWABLE_CTOR_TOSTRING`, the JDK clauses of `isToStringSink`. Matrix (published 0.40.17 →
+  this): 0 transitions toward silence, SILENT 1,330 → 949. A sidecar-less `invokeinterface` on a dependency type now
+  takes P6's `invisible` like `invokevirtual`. `CANDOR_SITE_FALLBACK=A|B` (off; measurement only) prices the proposal's
+  disclosure fallback.
+
 ## [0.40.17] — 2026-10-25
 
 - **`jbang-catalog.json` points at the v0.40.17 jar.**

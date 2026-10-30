@@ -992,27 +992,18 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
     }
 
     /** Whether a CHA over {@code owner} takes each subtype's JDK re-entry (call-target round 2). Over a PROJECT or
-     *  dependency owner, and over a JDK CLASS (`InputStream in; in.read(b)` — R32's own shape: every candidate is a
-     *  subclass of the class whose body the call names), always. Over a JDK INTERFACE (`List l; l.contains(o)`), only
-     *  for the root types' members ({@code Object}'s protocol, a {@code Throwable}'s string members — where R1235/R1300
-     *  always applied it): the interface names no body, its project implementors come from unrelated hierarchies, and
-     *  the R1166 parameter contract that might narrow them does not see a re-entered body
-     *  (ArgContractR1166Test#auditPropertiesHoldInOneTree pins `hasL(new ArrayList<>(..))`). Measured on the published
-     *  engine: the same shape with a DECLARED `contains` override is charged — so this holds the re-entered spelling
-     *  at the precision the suite pins, below the declared one's. */
+     *  dependency owner, always: the subtypes are the type's own. Over a JDK owner — `List l; l.contains(o)`,
+     *  `HashMap m; m.put(k, v)` — only for the root types' members ({@code Object}'s protocol, a {@code Throwable}'s
+     *  string members), which is where R1235/R1300 always applied it. CHA over a JDK type enumerates every project
+     *  subclass whatever the value is: measured, `parameters.put(k, v)` on a field holding `new HashMap<>()` charged an
+     *  anonymous LinkedHashMap subclass's removeEldestEntry (tomcat, Clock; the independent checker flagged it), and
+     *  ArgContractR1166Test pins the List shape. A java.io stream receiver keeps R32's reach through
+     *  {@link JdkSites#streamReceiver} instead. */
     static boolean reentryOverOwner(String owner, String name, String desc) {
         if (!JdkSites.isJdk(owner)) return true;
         if (Candor.isObjectProtocolExempt(name, desc)) return true;
-        if (JdkSites.at("java/lang/Throwable", name, desc) != null
-                && (owner.equals("java/lang/Throwable") || Candor.transSupers(owner).contains("java/lang/Throwable"))) return true;
-        return !jdkInterface(owner);
-    }
-    private static final Map<String, Boolean> JDK_IFACE = new java.util.concurrent.ConcurrentHashMap<>();
-    static boolean jdkInterface(String owner) {
-        return JDK_IFACE.computeIfAbsent(owner, o -> {
-            try { return Class.forName(o.replace('/', '.'), false, ClassLoader.getPlatformClassLoader()).isInterface(); }
-            catch (Throwable e) { return true; }   // unloadable: read as an interface (no re-entry), the pre-table answer
-        });
+        return JdkSites.at("java/lang/Throwable", name, desc) != null
+                && (owner.equals("java/lang/Throwable") || Candor.transSupers(owner).contains("java/lang/Throwable"));
     }
 
     /** The in-scan bounded-CHA rule as one predicate: a candidate set is edged when it is within the bound or the

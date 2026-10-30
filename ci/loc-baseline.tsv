@@ -4,7 +4,7 @@ src/main/java/io/poly/candor/AnalysisState.java	47	0
 src/main/java/io/poly/candor/ArgContract.java	1243	474
 src/main/java/io/poly/candor/CallTargets.java	308	82
 src/main/java/io/poly/candor/Candor.java	12930	3057
-src/main/java/io/poly/candor/Cha.java	1164	206
+src/main/java/io/poly/candor/Cha.java	1155	204
 src/main/java/io/poly/candor/Classifier.java	4063	2495
 src/main/java/io/poly/candor/Config.java	541	79
 src/main/java/io/poly/candor/DbClientSurface.java	573	38

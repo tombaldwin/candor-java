@@ -11,6 +11,7 @@ while read -r e; do n=$(basename $e .jar)
   [ -s $a ] && [ -s $b ] || continue
   python3 -I $here/mkrows.py $OUT/$n $a $b $extra > /dev/null
   if [ -s $OUT/$n/added.tsv ]; then bash $here/run.sh added $OUT/$n/rows.tsv $OUT/$n/added.tsv "$cp" --seed 3 > $OUT/$n/added.txt 2>&1; sed "s|^|$n\t|" $OUT/$n/added.txt >> $OUT/added.out; fi
+  [ -n "${ABCHECK_NO_EDGES:-}" ] && continue
   python3 -I $here/edgeset.py $OUT/$n/edges.tsv $a $b --seeds 3
   if grep -q real $OUT/$n/edges.tsv; then bash $here/run.sh edges $OUT/$n/edges.tsv "$cp" > $OUT/$n/edges.txt 2>&1; sed "s|^|$n\t|" $OUT/$n/edges.txt >> $OUT/edges.out; fi
 done < $L

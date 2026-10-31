@@ -27,7 +27,7 @@ for e in open('/Users/tom/candor-handoff/javaab-a/entries.txt'):
             if x[0] == 'SUB':
                 m = x[2][x[2].rfind('.', 0, x[2].index('(')) + 1:x[2].index('(')]
                 if m in STREAM: subs[x[1]].add(x[2])   # the members a decorator body calls on its delegate
-            elif len(x) >= 3: sites[x[0]].add((x[1], x[2]))
+            elif len(x) >= 3 and (len(x) < 4 or x[3] == 'unnamed'): sites[x[0]].add((x[1], x[2]))
     byhash = {r.get('hash'): r for r in B.values() if r.get('hash')}
     for f, E in lost:
         seen, q, hit = {f}, [f], None
@@ -40,7 +40,11 @@ for e in open('/Users/tom/candor-handoff/javaab-a/entries.txt'):
             for v in (B.get(u) or {}).get('calls') or []:
                 if v not in seen and len(seen) < 400: seen.add(v); q.append(v)
         post = B.get(f)
-        k = ('POSSIBLE-LOSS delegate path' if hit else 'no delegate path', 'post keeps Unknown' if 'Unknown' in eff(post) else 'post has no Unknown')
+        cov = ''
+        if hit:   # is the decorator site itself disclosed, with the delegate dispatch as its reason (the S6 floor)?
+            why = set((B.get(hit[0]) or {}).get('unknownWhy') or [])
+            cov = 'site disclosed (S6)' if any(w.startswith('dispatch:' + hit[2].replace('/', '.') + '.') for w in why) else 'site NOT disclosed'
+        k = ('POSSIBLE-LOSS delegate path' if hit else 'no delegate path', 'post keeps Unknown' if 'Unknown' in eff(post) else 'post has no Unknown', cov)
         st[k] += 1
         if hit: out.append((n, f, E, k[1], hit))
 for k, v in sorted(st.items()): print(v, *k, sep='\t')

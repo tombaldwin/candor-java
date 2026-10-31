@@ -26,6 +26,18 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   this): 0 transitions toward silence, SILENT 1,330 → 949. A sidecar-less `invokeinterface` on a dependency type now
   takes P6's `invisible` like `invokevirtual`. `CANDOR_SITE_FALLBACK=A|B` (off; measurement only) prices the proposal's
   disclosure fallback.
+- **A call on a JDK stream decorator over a delegate the caller does not name now reads `Unknown`** (the S6 floor):
+  `new DataInputStream(in).readUnsignedByte()`, a field-held `dis.readInt()`, `new BufferedReader(new
+  InputStreamReader(in)).readLine()` run the delegate's `read`, and the delegate can be a project stream. They read pure
+  on 0.40.17, where some CALLERS were charged only through R32's by-name edges to the caller's own stream class, which
+  never ran there (commons-compress `ArchiveStreamFactory.createArchiveInputStream`, tomcat `PEMFile`). `deny Unknown`
+  goes 0 → 1 on such a unit where some project override of the delegate base carries an effect the unit lacks; a
+  delegate built in place from JDK streams, or `System.in/out/err`, stays clean. The decorators are derived (every public
+  JDK stream class with a constructor taking a stream). `CANDOR_R1201_FLOOR` without `S6` turns it off.
+- **`ObjectOutputStream.writeObject` is no longer a `toString` sink**: the derivation read
+  `sun.io.serialization.extendedDebugInfo` (off unless set) as its default, so its debug-only `obj.toString()` does not
+  charge every project `toString` of a serialized value (hibernate `CollectionEntry.serialize` had gained
+  Clock/Db/Fs/Net/Rand through 57 bodies in this round's candidate; 0.40.17 never had that edge).
 
 ## [0.40.17] — 2026-10-25
 

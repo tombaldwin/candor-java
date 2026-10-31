@@ -352,26 +352,36 @@ final class JdkSites {
      *  concrete charge for a past-bound Unknown (measured on the corpus before this was kept: ~4,700 standalone rows). */
     static final Set<String> IO_STREAM_BASES = Set.of("java/io/Writer", "java/io/Reader", "java/io/InputStream", "java/io/OutputStream");
 
-    /** The members the exemption covers, read off the table: every member of a stream base whose JDK body re-enters
-     *  this (a provided overload), and every member such a body re-enters (a required one) — `read`/`write`/`append`/
-     *  `skip`/`transferTo` and their overloads, as R32's name test meant, and not `close` or `available`. */
-    static Set<String> streamMembers() {
-        Set<String> m = STREAM_MEMBERS;
-        if (m != null) return m;
-        Set<String> out = new HashSet<>();
-        for (var e : Table.MAP.entrySet()) {
-            String k = e.getKey();
-            int p = k.indexOf('('), dot = k.lastIndexOf('.', p);
-            if (!streamType(k.substring(0, dot))) continue;   // a stream base or a JDK stream class (PrintStream)
-            boolean thisHook = false;
-            for (Hook h : e.getValue().hooks()) if (h.slot() == THIS && !h.elem()) { out.add(h.member()); thisHook = true; }
-            if (thisHook) out.add(k.substring(dot + 1));
-        }
-        STREAM_MEMBERS = Set.copyOf(out);
-        return STREAM_MEMBERS;
+    /** The members the exemption covers for a receiver declared {@code t}, read off the table: every member of a JDK
+     *  stream class on {@code t}'s own chain (itself, its JDK supers) whose JDK body re-enters this (a provided
+     *  overload), and every member such a body re-enters (a required one). For a receiver declared by one of the four
+     *  bases that is exactly R32's name test — {@code read}/{@code write}/{@code append}/{@code skip}/{@code transferTo}
+     *  and their overloads, not {@code close} or {@code available}. PER CLASS, not one set over every stream class:
+     *  pooled, {@code FilterOutputStream.close} (which runs {@code this.flush()}) made {@code close} a stream member of
+     *  every {@code OutputStream} receiver and edged it, unbounded, to every project stream's {@code close}
+     *  (ant: 3,157 rows, measured on this round's candidate before this was per class). */
+    static boolean streamMember(String t, String m) {
+        if (t == null) return false;
+        if (memberOfClass(t, m)) return true;
+        for (String s : Candor.transSupers(t)) if (memberOfClass(s, m)) return true;
+        return false;
     }
-    private static volatile Set<String> STREAM_MEMBERS;
-    static boolean streamMember(String m) { return streamMembers().contains(m); }
+    private static boolean memberOfClass(String x, String m) {
+        if (!isJdk(x) || !streamType(x)) return false;
+        return STREAM_MEMBERS.computeIfAbsent(x, k -> {
+            Set<String> out = new HashSet<>();
+            for (var e : Table.MAP.entrySet()) {
+                String key = e.getKey();
+                int p = key.indexOf('('), dot = key.lastIndexOf('.', p);
+                if (!key.substring(0, dot).equals(k)) continue;
+                boolean thisHook = false;
+                for (Hook h : e.getValue().hooks()) if (h.slot() == THIS && !h.elem()) { out.add(h.member()); thisHook = true; }
+                if (thisHook) out.add(key.substring(dot + 1));
+            }
+            return Set.copyOf(out);
+        }).contains(m);
+    }
+    private static final java.util.concurrent.ConcurrentHashMap<String, Set<String>> STREAM_MEMBERS = new java.util.concurrent.ConcurrentHashMap<>();
 
     static boolean streamType(String t) {
         if (t == null) return false;
@@ -384,7 +394,7 @@ final class JdkSites {
      *  receiver, the body the JVM runs for the called member — its own (or nearest project) declaration, else every
      *  body the JDK's provided overload re-enters on it (the table) — edged, unbounded (R32's exemption above). */
     static void streamReceiver(AnalysisContext c, String id, String declType, String name, String desc) {
-        if (name.startsWith("<") || !streamMember(name + desc) || !streamType(declType) || CallTargets.outsideScan(c, declType)) return;
+        if (name.startsWith("<") || !streamType(declType) || !streamMember(declType, name + desc) || CallTargets.outsideScan(c, declType)) return;
         Set<String> out = new LinkedHashSet<>();
         for (String s : c.subtypeIndex.getOrDefault(declType, List.of())) {
             ClassNode cn = c.byName.get(s);

@@ -45,6 +45,7 @@ final class JdkSites {
     record Entry(List<Hook> hooks, boolean open) {}
 
     private static final class Table {
+        static final Map<String, Set<String>> DELEGATES = new HashMap<>(), BASE_MEMBERS = new HashMap<>();
         static final Map<String, Entry> MAP = load();
 
         private static Map<String, Entry> load() {
@@ -57,6 +58,13 @@ final class JdkSites {
                     while ((line = br.readLine()) != null) {
                         String[] p = line.split("\t");
                         if (p.length < 2) continue;
+                        if (p[0].endsWith(".<delegate>") || p[0].endsWith(".<members>")) {   // stream decorators
+                            Set<String> v = new TreeSet<>();
+                            for (int i = 1; i < p.length; i++) if (p[i].startsWith("@ ")) v.add(p[i].substring(2));
+                            int dot = p[0].lastIndexOf('.');
+                            (p[0].endsWith(".<delegate>") ? DELEGATES : BASE_MEMBERS).put(p[0].substring(0, dot), Set.copyOf(v));
+                            continue;
+                        }
                         List<Hook> hs = new ArrayList<>();
                         boolean open = false;
                         for (int i = 1; i < p.length; i++) {
@@ -226,6 +234,113 @@ final class JdkSites {
             if (CallTargets.outsideScan(c, t)) CallTargets.resolve(c, id, t, h.name(), h.desc(), null, CallTargets.Spelling.SINK, null);
             if (CallTargets.DEBUG) System.err.println("CT\tSITE\targ\t" + id + "\t" + min.owner + "." + min.name + min.desc + "\t" + h.slot() + " " + h.member() + "\t" + t + "\tlocal=" + local.size());
         }
+    }
+
+    // ------------------------------------------------------------------------------------------- a stream DECORATOR
+    /** The delegate bases of JDK stream decorator {@code t} (the table's {@code <delegate>} line), empty if none. */
+    static Set<String> delegateBases(String t) { return t == null ? Set.of() : Table.DELEGATES.getOrDefault(t, Set.of()); }
+
+    /** A call on a JDK stream DECORATOR whose delegate this method cannot name runs that delegate's members — any stream
+     *  of the delegate's base, a project one included (commons-compress's {@code dis.readUnsignedByte()} over the
+     *  InputStream its constructor was handed; tomcat's PEMFile reading a caller's InputStream through a BufferedReader).
+     *  The summary does not follow a field-held delegate, so the call read pure. DISCLOSED, as the S6 floor
+     *  ({@link ArgContract#objectFloor}): Unknown where some project override of a delegate-base member carries an effect
+     *  the caller lacks. Not when every producer of the receiver names the delegate — a NEW here over NEWs of JDK streams
+     *  ({@code new BufferedReader(new FileReader(f))}) — or is {@code System.in/out/err}. Published 0.40.17 covered some
+     *  of these callers only through R32's by-name edges to the CALLER's own stream class, which the JVM never ran there. */
+    static void decoratorDelegate(AnalysisContext c, String id, Candor.MethodScan s, org.objectweb.asm.tree.MethodInsnNode min) {
+        if (!ArgContract.floor("S6")) return;
+        int op = min.getOpcode();
+        if (op != Opcodes.INVOKEVIRTUAL && op != Opcodes.INVOKEINTERFACE || min.name.startsWith("<")) return;
+        if (!isJdk(min.owner) || !streamType(min.owner) && delegateBases(min.owner).isEmpty()) return;
+        org.objectweb.asm.tree.analysis.Frame<org.objectweb.asm.tree.analysis.SourceValue>[] fr = Candor.srcFrames(s);
+        Set<String> bases;
+        if (fr == null) bases = delegateBases(min.owner);
+        else {
+            var f = fr[s.mn.instructions.indexOf(min)];
+            if (f == null) return;   // unreachable code
+            int idx = f.getStackSize() - org.objectweb.asm.Type.getArgumentTypes(min.desc).length - 1;
+            bases = idx < 0 ? delegateBases(min.owner) : unnamed(s.mn, fr, f.getStack(idx), min.owner, 0);
+        }
+        for (String b : bases)
+            for (String m : Table.BASE_MEMBERS.getOrDefault(b, Set.of()))
+                c.argContractFloor.computeIfAbsent(id, k -> new TreeSet<>()).add(b + "." + m + "\t" + b + "\tS6");
+    }
+
+    /** The stream bases whose project overrides a decorator value {@code v} can run, because some delegate in its chain
+     *  is not named here: the innermost unnamed delegate's base (BufferedReader over an InputStreamReader over a
+     *  parameter InputStream runs an InputStream's read). Empty when every producer names its whole chain. */
+    private static Set<String> unnamed(MethodNode mn, org.objectweb.asm.tree.analysis.Frame<org.objectweb.asm.tree.analysis.SourceValue>[] fr,
+            org.objectweb.asm.tree.analysis.SourceValue v, String staticType, int depth) {
+        return valueBases(mn, fr, v, delegateBases(staticType), depth);
+    }
+
+    /** {@code unknown}: the bases to answer for a producer this method cannot see (a parameter, a field, a call). */
+    private static Set<String> valueBases(MethodNode mn, org.objectweb.asm.tree.analysis.Frame<org.objectweb.asm.tree.analysis.SourceValue>[] fr,
+            org.objectweb.asm.tree.analysis.SourceValue v, Set<String> unknown, int depth) {
+        Set<String> out = new TreeSet<>();
+        if (v == null || v.insns.isEmpty() || depth > 8) { out.addAll(unknown); return out; }
+        for (org.objectweb.asm.tree.AbstractInsnNode p : v.insns) {
+            int op = p.getOpcode();
+            if (op == Opcodes.ALOAD || op == Opcodes.DUP || op == Opcodes.CHECKCAST || op == Opcodes.ASTORE) {
+                var f = fr[mn.instructions.indexOf(p)];
+                var n = f == null ? null : op == Opcodes.ALOAD ? f.getLocal(((org.objectweb.asm.tree.VarInsnNode) p).var)
+                        : f.getStackSize() == 0 ? null : f.getStack(f.getStackSize() - 1);
+                out.addAll(valueBases(mn, fr, n, unknown, depth + 1));
+            } else if (op == Opcodes.NEW) {
+                String t = ((org.objectweb.asm.tree.TypeInsnNode) p).desc;
+                if (!isJdk(t)) out.addAll(unknown.isEmpty() ? Set.of() : unknown);   // a project stream: its own bodies run
+                else if (!delegateBases(t).isEmpty()) out.addAll(argBases(mn, fr, p, t, depth));
+                // a JDK leaf stream (FileReader, ByteArrayInputStream): nothing a project can supply
+            } else if (op == Opcodes.GETSTATIC && ((org.objectweb.asm.tree.FieldInsnNode) p).owner.equals("java/lang/System")) {
+                // System.in/out/err: the JDK's own streams (System.setIn/setOut are not followed)
+            } else if (op != Opcodes.ACONST_NULL) out.addAll(unknown);
+        }
+        return out;
+    }
+
+    /** The unnamed bases among the streams the constructor run on {@code nw} (a NEW of JDK decorator {@code t}) is
+     *  handed; the decorator's own delegate bases if that constructor call is not found. */
+    private static Set<String> argBases(MethodNode mn, org.objectweb.asm.tree.analysis.Frame<org.objectweb.asm.tree.analysis.SourceValue>[] fr,
+            org.objectweb.asm.tree.AbstractInsnNode nw, String t, int depth) {
+        for (var q = nw.getNext(); q != null; q = q.getNext()) {
+            if (!(q instanceof org.objectweb.asm.tree.MethodInsnNode ci) || ci.getOpcode() != Opcodes.INVOKESPECIAL
+                    || !ci.name.equals("<init>") || !ci.owner.equals(t)) continue;
+            var f = fr[mn.instructions.indexOf(ci)];
+            if (f == null) break;
+            org.objectweb.asm.Type[] at = org.objectweb.asm.Type.getArgumentTypes(ci.desc);
+            int b0 = f.getStackSize() - at.length;
+            if (b0 < 1 || !producedBy(mn, fr, f.getStack(b0 - 1), nw, 0)) continue;   // another NEW of t: not this one's
+            Set<String> out = new TreeSet<>();
+            for (int k = 0; k < at.length; k++) {
+                if (at[k].getSort() != org.objectweb.asm.Type.OBJECT) continue;
+                String b = baseOf(at[k].getInternalName());
+                if (b != null) out.addAll(valueBases(mn, fr, f.getStack(b0 + k), Set.of(b), depth + 1));
+            }
+            return out;
+        }
+        return delegateBases(t);
+    }
+
+    /** Which of the four java.io bases {@code t} is (or extends), or null. */
+    static String baseOf(String t) {
+        if (t == null) return null;
+        if (IO_STREAM_BASES.contains(t)) return t;
+        for (String s : Candor.transSupers(t)) if (IO_STREAM_BASES.contains(s)) return s;
+        return null;
+    }
+
+    private static boolean producedBy(MethodNode mn, org.objectweb.asm.tree.analysis.Frame<org.objectweb.asm.tree.analysis.SourceValue>[] fr,
+            org.objectweb.asm.tree.analysis.SourceValue v, org.objectweb.asm.tree.AbstractInsnNode nw, int depth) {
+        if (v == null || depth > 4) return false;
+        for (var q : v.insns) {
+            if (q == nw) return true;
+            if (q.getOpcode() == Opcodes.DUP) {
+                var f = fr[mn.instructions.indexOf(q)];
+                if (f != null && f.getStackSize() > 0 && producedBy(mn, fr, f.getStack(f.getStackSize() - 1), nw, depth + 1)) return true;
+            }
+        }
+        return false;
     }
 
     // ------------------------------------------------------------------------------------------- R32's bound exemption

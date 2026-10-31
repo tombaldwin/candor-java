@@ -396,12 +396,13 @@ final class ArgContract {
      *  whose parameter is hashed; {@code S4} a direct {@code equals}/{@code hashCode}/{@code toString}/{@code compareTo}
      *  past the CHA fan-out bound whose receiver's producers are not all known (R1205); {@code S5} a JDK string sink's
      *  {@code Object} operand ({@code "" + o}, {@code String.valueOf(o)}, …) whose producers are not all known, in or past
-     *  the bound, and the same operand handed to a project parameter that is stringified or compared (R1217). */
+     *  the bound, and the same operand handed to a project parameter that is stringified or compared (R1217); {@code S6}
+     *  a call on a JDK stream decorator whose delegate the caller does not name ({@link JdkSites#decoratorDelegate}). */
     // not final: a test widens it in-process (ObjectProtocolProducersR1205Test#withFloors), the env being read-only there
     static volatile Set<String> FLOOR = floorClasses(System.getenv("CANDOR_R1201_FLOOR"));
     static Set<String> floorClasses(String v) {
-        if (v == null || v.isBlank()) return Set.of("S1", "S1d", "S2", "S2r", "S2o", "S3", "S4", "S5");
-        if (v.trim().equals("all")) return Set.of("S1", "S1d", "S2", "S2r", "S2o", "S3", "S4", "S5");
+        if (v == null || v.isBlank()) return Set.of("S1", "S1d", "S2", "S2r", "S2o", "S3", "S4", "S5", "S6");
+        if (v.trim().equals("all")) return Set.of("S1", "S1d", "S2", "S2r", "S2o", "S3", "S4", "S5", "S6");
         if (v.trim().equals("none")) return Set.of();
         return Set.of(v.trim().split("\\s*,\\s*"));
     }
@@ -641,7 +642,7 @@ final class ArgContract {
             if (!held.isEmpty()) { cands = new ArrayList<>(cands); cands.addAll(held); }   // SOUNDNESS R1306
             for (String b : cands)
                 if (newConcrete(fx, b, caller) || (R1303_UNKNOWN && newUnknown(fx, b, caller))) {
-                    added |= disclose(c, caller, w.get(3).equals("S4") || w.get(3).equals("S5") ? owner : "java/lang/Object", name,
+                    added |= disclose(c, caller, w.get(3).equals("S4") || w.get(3).equals("S5") || w.get(3).equals("S6") ? owner : "java/lang/Object", name,
                             "R1201U" + w.get(3), owner, b);
                     break;
                 }

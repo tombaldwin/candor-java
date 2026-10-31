@@ -805,6 +805,7 @@ final class JdkSiteGen {
         drain();
         out.clear();
         runPass();          // reads the converged summaries
+        decorators();
         if (DEBUG) System.err.println("SITEGEN " + memo.size() + " summaries, " + computations + " computations");
     }
 
@@ -853,6 +854,41 @@ final class JdkSiteGen {
                 prune(hs);
                 if (!hs.isEmpty()) out.put(x + "." + name + desc, hs);
             }
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------- stream decorators
+    static final List<String> STREAM_BASES = List.of("java/io/InputStream", "java/io/OutputStream", "java/io/Reader", "java/io/Writer");
+    String streamBase(String t) {
+        for (String b : STREAM_BASES) if (isSub(t, b)) return b;
+        return null;
+    }
+    /** The stream DECORATORS: an exported public JDK stream class with an accessible constructor taking a stream —
+     *  its bodies read/write that DELEGATE, held in a field the summary does not follow (BufferedReader's {@code in},
+     *  DataInputStream's {@code in}, InputStreamReader's decoder over its InputStream). Line {@code X.<delegate>} with
+     *  one {@code @ base} per delegate base; and for each base, {@code B.<members>} with {@code @ member} per
+     *  accessible instance member B declares — what a decorator's body can run on its delegate. */
+    void decorators() {
+        for (String x : new TreeSet<>(classes.keySet())) {
+            ClassNode c = classes.get(x);
+            if (!exported(x) || (c.access & Opcodes.ACC_PUBLIC) == 0 || (c.access & Opcodes.ACC_INTERFACE) != 0) continue;
+            if (STREAM_BASES.contains(x) || streamBase(x) == null) continue;
+            TreeSet<String> bs = new TreeSet<>();
+            for (MethodNode m : c.methods) {
+                if (!m.name.equals("<init>") || (m.access & (Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED)) == 0) continue;
+                for (Type a : Type.getArgumentTypes(m.desc))
+                    if (a.getSort() == Type.OBJECT) { String b = streamBase(a.getInternalName()); if (b != null) bs.add("@ " + b); }
+            }
+            if (!bs.isEmpty()) out.put(x + ".<delegate>", bs);
+        }
+        for (String b : STREAM_BASES) {
+            ClassNode c = classes.get(b);
+            if (c == null) continue;
+            TreeSet<String> ms = new TreeSet<>();
+            for (MethodNode m : c.methods)
+                if (!m.name.startsWith("<") && (m.access & Opcodes.ACC_STATIC) == 0 && (m.access & (Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED)) != 0)
+                    ms.add("@ " + m.name + m.desc);
+            out.put(b + ".<members>", ms);
         }
     }
 

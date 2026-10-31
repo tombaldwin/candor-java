@@ -5814,6 +5814,8 @@ public class Candor {
             // call-target round 2 — the JDK site table's ARGUMENT hooks: a JDK body that runs a member of a value it
             // was handed (`new ArrayList<>(c)` runs c.toArray(); `oos.writeObject(o)` runs o's private writeObject)
             JdkSites.argumentHooks(ctx(), id, min, rf);
+            // …and a JDK stream DECORATOR over a delegate this method does not name runs that delegate (S6 floor)
+            JdkSites.decoratorDelegate(ctx(), id, s, min);
         }
     }
 

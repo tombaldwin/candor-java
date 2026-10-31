@@ -1,0 +1,10 @@
+# FABRICATED cells the baseline carries by ruling (call-target round 2 review, 2026-10-31): LICENSED, on conditions.
+# wx_exact_prod_skel: the receiver is an exact constructor of one skeleton subclass, and bounded CHA charges a hook
+# on a SIBLING subclass; its explicit twin wx_exact_prod_virt (the same shape spelled as a virtual call) was already
+# FABRICATED on published 0.40.17 in every arm. gate.py prints these on every run so they stay visible.
+wx_exact_prod_skel_appimpl.appimpl.n0.Fs	chain	FABRICATED	licensed (round 2: OK on 0.40.17)
+wx_exact_prod_skel_appimpl.appimpl.n0.Fs	nocg	FABRICATED	licensed (round 2: OK on 0.40.17)
+wx_exact_prod_skel_appimpl.appimpl.n0.Fs	one	FABRICATED	licensed (round 2: OK on 0.40.17)
+wx_exact_prod_skel_mod.mod.n0.Fs	scan	FABRICATED	licensed (round 2: OK on 0.40.17)
+wx_exact_prod_virt_appimpl.appimpl.n0.Fs	*	FABRICATED	the twin (FABRICATED on 0.40.17)
+wx_exact_prod_virt_mod.mod.n0.Fs	scan	FABRICATED	the twin (FABRICATED on 0.40.17)

@@ -27,6 +27,14 @@ for k, v in sorted(b.items()):
 new = sorted(set(c) - set(b))
 for k in new:
     if c[k] == 'FABRICATED': bad.append(f'new cell FABRICATED: {k[0]}:{k[1]}')
+import os
+lic = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'licensed.tsv')
+if os.path.exists(lic):
+    for l in open(lic):
+        if l.strip() and not l.startswith('#'):
+            i, a, v, why = l.rstrip('\n').split('\t')
+            ks = [k for k in c if k[0] == i and (a == '*' or k[1] == a)]
+            for k in ks: print(f'  licensed: {k[0]}:{k[1]} {c[k]} ({why})')
 print(f'baseline {len(b)} (cell,arm), candidate {len(c)}, {len(new)} new; transitions:')
 for t, n in tr.most_common():
     print(f'{n:5d}  {t}   e.g. ' + ', '.join(ex[t][:6]))

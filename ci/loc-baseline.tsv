@@ -15,7 +15,7 @@ src/main/java/io/poly/candor/ExactTypes.java	570	219
 src/main/java/io/poly/candor/Fallback.java	81	63
 src/main/java/io/poly/candor/FrameworkReach.java	214	51
 src/main/java/io/poly/candor/Interp.java	752	214
-src/main/java/io/poly/candor/JdkSites.java	533	206
+src/main/java/io/poly/candor/JdkSites.java	546	214
 src/main/java/io/poly/candor/KappaJdkSinks.java	372	252
 src/main/java/io/poly/candor/Literals.java	928	346
 src/main/java/io/poly/candor/Loader.java	1261	278

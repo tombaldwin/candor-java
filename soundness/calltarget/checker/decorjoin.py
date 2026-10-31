@@ -46,7 +46,7 @@ for e in open('/Users/tom/candor-handoff/javaab-a/entries.txt'):
             cov = 'site disclosed (S6)' if any(w.startswith('dispatch:' + hit[2].replace('/', '.') + '.') for w in why) else 'site NOT disclosed'
         k = ('POSSIBLE-LOSS delegate path' if hit else 'no delegate path', 'post keeps Unknown' if 'Unknown' in eff(post) else 'post has no Unknown', cov)
         st[k] += 1
-        if hit: out.append((n, f, E, k[1], hit))
+        if hit: out.append((n, f, E, k[1], k[2], hit))
 for k, v in sorted(st.items()): print(v, *k, sep='\t')
 rows_hit = collections.Counter((x[0], x[1]) for x in out)
 print('rows with a possible delegate loss:', len(rows_hit), 'entries:', len({x[0] for x in out}))

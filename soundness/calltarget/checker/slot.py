@@ -41,10 +41,34 @@ for e in open(L):
             if E == 'Unknown': slot = '(a) resolved-charged' if eff(q) - eff(r) else '(b)? hedge removed'
             elif 'Unknown' in eff(q): slot = '(d)? keeps Unknown'
             else: slot = '(b)? pure for E'
-            if 'EDGE' in causes and causes <= {'EDGE', 'CASCADE'} and vs and all(v == 'FALSE' for v in vs) and slot.startswith('(b)'):
-                slot = '(b) removed edges FALSE'
+            if 'EDGE' in causes and causes <= {'EDGE', 'CASCADE'} and vs and all(v == 'FALSE' for v in vs):
+                slot = '(b) removed edges FALSE'   # a hedge left on the row does not matter: the removed edge never ran
+            elif causes == {'CASCADE'}:
+                slot = '(cascade) ' + slot
             k = ('Unknown' if E == 'Unknown' else 'concrete', '+'.join(sorted(causes)), slot, 'TRUE' if 'TRUE' in vs else '')
             st[k] += 1; detail.append((n, f, E, k, sorted(set((q or {}).get('unknownWhy') or []))[:3], vs[:4]))
+# resolve every pure-CASCADE pair to its roots: the slots of the callee pairs (callee, E) that lost E, transitively
+slotof = {(d[0], d[1], d[2]): d[3][2] for d in detail}
+callees = {}
+for e2 in open(L):
+    n = e2.strip().rsplit('/', 1)[-1][:-4]
+    A = rows(f'{R}/rep/{PRE}/{n}.json') if M == 'S' else rows(f'{R}/repC/{PRE}/{n}/consumer.json')
+    for f, r in A.items(): callees[(n, f)] = r.get('calls') or []
+def root(n, f, E, seen):
+    sl = slotof.get((n, f, E))
+    if sl is None: return set()
+    if not sl.startswith('(cascade)'): return {sl}
+    if (n, f, E) in seen: return {'(cycle)'}
+    seen.add((n, f, E)); out = set()
+    for v in callees.get((n, f), []): out |= root(n, v, E, seen)
+    return out or {'(cascade, no root)'}
+res = collections.Counter()
+for d in detail:
+    if d[3][2].startswith('(cascade)'):
+        rs = root(d[0], d[1], d[2], set())
+        res[' + '.join(sorted(rs))] += 1
 for k, v in sorted(st.items()): print(v, *k, sep='\t')
+print('-- pure cascades resolved to their roots:')
+for k, v in sorted(res.items()): print(v, k, sep='\t')
 if '-v' in sys.argv:
     for d in detail: print('  ', *d, sep='\t')

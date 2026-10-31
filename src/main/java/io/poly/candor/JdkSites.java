@@ -251,7 +251,20 @@ final class JdkSites {
     static void decoratorDelegate(AnalysisContext c, String id, Candor.MethodScan s, org.objectweb.asm.tree.MethodInsnNode min) {
         if (!ArgContract.floor("S6")) return;
         int op = min.getOpcode();
-        if (op != Opcodes.INVOKEVIRTUAL && op != Opcodes.INVOKEINTERFACE || min.name.startsWith("<")) return;
+        if (min.name.startsWith("<")) return;
+        // a body of a JDK decorator that runs on a PROJECT subclass — `super.ready()` from it, or a call on a project-typed
+        // receiver whose own chain does not declare the member — reads the delegate the subclass handed `super(in)`,
+        // which this caller does not name (commons-io UncheckedBufferedReader's `super.readLine()`: R32's edge to its
+        // own `read` covered it on 0.40.17 for the wrong reason)
+        String inherited = op == Opcodes.INVOKESPECIAL ? (isJdk(min.owner) ? min.owner : null)
+                : !isJdk(min.owner) && ctx().byName.containsKey(min.owner) && projectBody(min.owner, min.name, min.desc) == null ? jdkContext(min.owner) : null;
+        if (inherited != null) {
+            for (String b : delegateBases(inherited))
+                for (String m : Table.BASE_MEMBERS.getOrDefault(b, Set.of()))
+                    c.argContractFloor.computeIfAbsent(id, k -> new TreeSet<>()).add(b + "." + m + "\t" + b + "\tS6");
+            return;
+        }
+        if (op != Opcodes.INVOKEVIRTUAL && op != Opcodes.INVOKEINTERFACE) return;
         if (!isJdk(min.owner) || !streamType(min.owner) && delegateBases(min.owner).isEmpty()) return;
         org.objectweb.asm.tree.analysis.Frame<org.objectweb.asm.tree.analysis.SourceValue>[] fr = Candor.srcFrames(s);
         Set<String> bases;

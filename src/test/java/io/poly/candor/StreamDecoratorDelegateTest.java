@@ -34,6 +34,11 @@ class StreamDecoratorDelegateTest {
                 + "  Held(java.io.InputStream in) { dis = new java.io.DataInputStream(in); }\n"
                 + "  int read8() throws java.io.IOException { return dis.readUnsignedByte(); }\n"
                 + "}\n");
+        m.put("dd/Sub.java", "package dd;\nclass Sub extends java.io.BufferedReader {\n"
+                + "  Sub(java.io.Reader r) { super(r); }\n"
+                + "  String line() throws java.io.IOException { return super.readLine(); }\n"
+                + "}\n");
+        m.put("dd/Rd.java", "package dd;\nclass Rd extends java.io.Reader { public int read(char[] b, int o, int n) { S.hit(); return -1; } public void close() { } }\n");
         m.put("dd/Use.java", "package dd;\npublic class Use {\n"
                 + "  public static int dis(java.io.InputStream in) throws Exception { return new java.io.DataInputStream(in).readUnsignedByte(); }\n"
                 + "  public static int held(Held h) throws Exception { return h.read8(); }\n"
@@ -57,6 +62,8 @@ class StreamDecoratorDelegateTest {
                     "a field-held decorator over the constructor's stream: dd.Held.read8 — got " + inf.get("dd.Held.read8"));
             assertTrue(inf.getOrDefault("dd.Use.held", EffectSet.empty()).contains(Effect.UNKNOWN),
                     "…and its caller: dd.Use.held — got " + inf.get("dd.Use.held"));
+            assertTrue(inf.getOrDefault("dd.Sub.line", EffectSet.empty()).contains(Effect.UNKNOWN),
+                    "super.readLine() on a BufferedReader subclass reads the delegate super(r) was handed: dd.Sub.line — got " + inf.get("dd.Sub.line"));
             for (String w : new String[] {"known", "sys"})
                 assertFalse(inf.getOrDefault("dd.Use." + w, EffectSet.empty()).contains(Effect.UNKNOWN),
                         "the delegate is named here (a JDK stream built in place / System.in): dd.Use." + w + " — got " + inf.get("dd.Use." + w));

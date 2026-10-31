@@ -11,6 +11,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## [0.40.18] — 2026-10-31
 
+- **`jbang-catalog.json` points at the v0.40.18 jar.**
+
 - ⚠ **The JDK site table: which overridable members a JDK body runs is derived from the JDK's own bytecode
   (call-target round 2; SOUNDNESS R1242, R1406, R1441, R32, R1235, R1300, R1305).** `soundness/jdk_index/JdkSiteGen`
   summarises every public JDK member, as seen from the receiver class it runs on, into `jdk-sites.idx.gz` (the nine

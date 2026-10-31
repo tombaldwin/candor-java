@@ -39,9 +39,13 @@ public final class CheckAdded {
     static final Map<String, Set<String>> ROWS = new HashMap<>();
     static final Map<String, List<String>> SUBS = new HashMap<>();
     static boolean TYPE_BLIND, MEMBER_BLIND;
+    /** CHECK_EXACT_STRICT=1: a slot whose producer is a NEW is exactly that class (hooks and dispatch on it are not
+     *  widened to its subtypes); CHECK_WHY=1 prints each explained row's explanation. Measurement switches. */
+    static final boolean EXACT_STRICT = System.getenv("CHECK_EXACT_STRICT") != null, WHY = System.getenv("CHECK_WHY") != null;
 
     public static void main(String[] a) throws Exception {
         if (a.length > 0 && a[0].equals("--edges")) { edges(a[1], a[2]); return; }
+        if (a.length > 0 && a[0].equals("--decor")) { decor(a[1]); return; }
         int seedN = 0;
         for (int i = 3; i < a.length; i++) if (a[i].equals("--seed")) seedN = Integer.parseInt(a[++i]);
         for (String l : Files.readAllLines(Path.of(a[0]))) {
@@ -66,6 +70,7 @@ public final class CheckAdded {
             String k = ad[2].startsWith("seed") ? ad[2] : "real";
             if (rest.isEmpty()) {
                 stats.merge(k + " explained", 1, Integer::sum);
+                if (WHY && k.equals("real")) System.out.println("EXPLAINED\treal\t" + ad[0] + "\t" + why);
                 for (String w : why.values()) if (w.contains("(Object-typed slot)")) stats.merge(k + " explained-weak", 1, Integer::sum);
             } else {
                 stats.merge(k + " UNEXPLAINED", 1, Integer::sum);
@@ -292,9 +297,19 @@ public final class CheckAdded {
             for (String x = t; x != null && CLS.containsKey(x); x = CLS.get(x).superName)
                 if (carries(x, "<clinit>", "()V", E)) return "PROP clinit " + x;
         }
+        Frame<SourceValue>[] sfr = null;
+        if (EXACT_STRICT) try { sfr = new Analyzer<>(new SourceInterpreter()).analyze(owner, mn); } catch (Exception e) { sfr = null; }
         for (AbstractInsnNode in : mn.instructions) {
             if (in instanceof MethodInsnNode mi) {
-                String w = prop(mi.getOpcode(), mi.owner, mi.name, mi.desc, E);
+                String w;
+                Set<String> exactRecv = sfr == null ? null : exactReceiver(owner, mn, sfr, mi);
+                if (exactRecv != null) {   // every producer of the receiver is a NEW: dispatch runs those classes' bodies only
+                    w = null;
+                    for (String x : exactRecv) {
+                        String b = resolveUp(x, mi.name, mi.desc);
+                        if (b != null && carries(b, mi.name, mi.desc, E)) { w = "PROP exact-new " + x; break; }
+                    }
+                } else w = prop(mi.getOpcode(), mi.owner, mi.name, mi.desc, E);
                 if (w != null) return w;
             } else if (in instanceof InvokeDynamicInsnNode id) {
                 for (Object b : id.bsmArgs)
@@ -359,6 +374,18 @@ public final class CheckAdded {
         }
         return null;
     }
+    /** the receiver's classes when EVERY producer of it is a NEW (exact-strict mode), else null */
+    static Set<String> exactReceiver(String owner, MethodNode mn, Frame<SourceValue>[] fr, MethodInsnNode mi) {
+        if (mi.getOpcode() != Opcodes.INVOKEVIRTUAL && mi.getOpcode() != Opcodes.INVOKEINTERFACE) return null;
+        Frame<SourceValue> f = fr[mn.instructions.indexOf(mi)];
+        if (f == null) return null;
+        int idx = f.getStackSize() - Type.getArgumentTypes(mi.desc).length - 1;
+        if (idx < 0) return null;
+        Set<String> ts = types(owner, mn, fr, f.getStack(idx), 0), out = new LinkedHashSet<>();
+        if (ts.isEmpty()) return null;
+        for (String t : ts) { if (t == null || !t.startsWith("=")) return null; out.add(t.substring(1)); }
+        return out;
+    }
     static String prop(int op, String owner, String name, String desc, String E) {
         if (op == Opcodes.INVOKESTATIC || op == Opcodes.INVOKESPECIAL) {
             String b = CLS.containsKey(owner) ? resolveUp(owner, name, desc) : null;
@@ -369,6 +396,8 @@ public final class CheckAdded {
         if (up != null && carries(up, name, desc, E)) return "PROP up";
         for (String s : subtypes(owner)) {
             if (concrete(declared(CLS.get(s), name, desc)) && carries(s, name, desc, E)) return "PROP cha";
+            String ib = resolveUp(s, name, desc);
+            if (ib != null && !ib.equals(s) && CLS.containsKey(ib) && carries(ib, name, desc, E)) return "PROP cha-inherited " + ib + " via " + s;
             // a subtype whose body for the member is a JDK one (a project Multiset inheriting AbstractCollection's
             // containsAll): that JDK body's re-entered members on the subtype
             String b = resolveUp(s, name, desc);
@@ -388,7 +417,9 @@ public final class CheckAdded {
         for (String t : types) {
             if (t == null) continue;
             if (t.startsWith("[")) { Type et = Type.getType(t).getElementType(); if (et.getSort() != Type.OBJECT) continue; t = et.getInternalName(); }
-            for (String s : TYPE_BLIND ? CLS.keySet() : subtypes(t)) {
+            boolean exact = t.startsWith("=");
+            if (exact) t = t.substring(1);
+            for (String s : TYPE_BLIND ? CLS.keySet() : exact ? (CLS.containsKey(t) ? List.of(t) : List.<String>of()) : subtypes(t)) {
                 Set<String> rs = withDefaults(s, reachFor(s, body, name, desc));
                 for (MethodNode m : CLS.get(s).methods) {
                     if ((m.access & Opcodes.ACC_STATIC) != 0 || !concrete(m)) continue;
@@ -406,7 +437,8 @@ public final class CheckAdded {
         if (v == null || depth > 6) return out;
         for (AbstractInsnNode p : v.insns) {
             switch (p.getOpcode()) {
-                case Opcodes.NEW, Opcodes.CHECKCAST -> out.add(((TypeInsnNode) p).desc);
+                case Opcodes.NEW -> out.add((EXACT_STRICT ? "=" : "") + ((TypeInsnNode) p).desc);
+                case Opcodes.CHECKCAST -> out.add(((TypeInsnNode) p).desc);
                 case Opcodes.ANEWARRAY -> out.add("[L" + ((TypeInsnNode) p).desc + ";");
                 case Opcodes.GETFIELD, Opcodes.GETSTATIC -> out.add(internal(((FieldInsnNode) p).desc));
                 case Opcodes.INVOKEVIRTUAL, Opcodes.INVOKEINTERFACE, Opcodes.INVOKESTATIC, Opcodes.INVOKESPECIAL ->
@@ -526,9 +558,117 @@ public final class CheckAdded {
             String why = truth(p[0], p[1]);
             String v = why == null ? "FALSE" : why.startsWith("?") ? "UNDECIDED" : why.contains("java/lang/Object") && why.startsWith("hook") ? "TRUE-WEAK" : "TRUE";
             st.merge(p[2].split(":")[0] + " " + v, 1, Integer::sum);
-            if (!v.equals("FALSE") || p[2].startsWith("seed")) System.out.println(v + "\t" + p[2] + "\t" + p[0] + "\t" + p[1] + "\t" + (why == null ? "" : why));
+            System.out.println(v + "\t" + p[2] + "\t" + p[0] + "\t" + p[1] + "\t" + (why == null ? "" : why));
         }
         System.out.println("STATS " + st);
+    }
+    // ------------------------------------------------------------------------------------------- DECOR
+    /** {@code --decor <cp>}: every call on a JDK stream DECORATOR (a java.io stream class with a constructor taking a
+     *  stream) whose delegate this method cannot name — the receiver is not a NEW here over a NEW of a JDK class.
+     *  The decorator's own body runs the delegate's read/write, so such a call can run ANY project stream of the
+     *  delegate's base. Lines: unit, decorator.member, base. A detector for the removal audit, not a model. */
+    static final List<String> BASES = List.of("java/io/InputStream", "java/io/OutputStream", "java/io/Reader", "java/io/Writer");
+    static String base(String t) { for (String b : BASES) if (t.equals(b) || isSubtype(t, b)) return b; return null; }
+    static boolean decorator(String t) {
+        ClassNode c = jdk(t);
+        if (c == null || base(t) == null) return false;
+        for (MethodNode m : c.methods)
+            if (m.name.equals("<init>") && (m.access & Opcodes.ACC_PUBLIC) != 0)
+                for (Type x : Type.getArgumentTypes(m.desc)) if (x.getSort() == Type.OBJECT && base(x.getInternalName()) != null) return true;
+        return false;
+    }
+    static boolean knownJdkChain(MethodNode mn, Frame<SourceValue>[] fr, SourceValue v, int depth) {
+        if (v == null || v.insns.isEmpty() || depth > 8) return false;
+        for (AbstractInsnNode p : v.insns) {
+            int op = p.getOpcode();
+            if (op == Opcodes.ALOAD || op == Opcodes.DUP || op == Opcodes.CHECKCAST || op == Opcodes.ASTORE) {
+                // a copy: follow it to what was copied (a local's stores, the duplicated / cast stack top)
+                Frame<SourceValue> f = fr[mn.instructions.indexOf(p)];
+                if (f == null) return false;
+                if (op == Opcodes.ALOAD) {
+                    SourceValue lv = f.getLocal(((VarInsnNode) p).var);
+                    if (lv == null || lv.insns.isEmpty() || !knownJdkChain(mn, fr, lv, depth + 1)) return false;
+                } else if (f.getStackSize() == 0 || !knownJdkChain(mn, fr, f.getStack(f.getStackSize() - 1), depth + 1)) return false;
+                continue;
+            }
+            if (op != Opcodes.NEW) return false;
+            String t = ((TypeInsnNode) p).desc;
+            if (!isJdk(t)) return false;
+            if (!decorator(t)) continue;   // a JDK leaf stream (FileReader, ByteArrayInputStream, ...)
+            // the decorator's constructor call on this NEW: its stream arguments must be known JDK chains too
+            boolean found = false;
+            for (AbstractInsnNode q = p.getNext(); q != null; q = q.getNext())
+                if (q instanceof MethodInsnNode ci && ci.getOpcode() == Opcodes.INVOKESPECIAL && ci.name.equals("<init>") && ci.owner.equals(t)) {
+                    Frame<SourceValue> f = fr[mn.instructions.indexOf(ci)];
+                    if (f == null) return false;
+                    Type[] at = Type.getArgumentTypes(ci.desc);
+                    int b0 = f.getStackSize() - at.length;
+                    if (b0 < 1 || !newOf(mn, fr, f.getStack(b0 - 1), p)) continue;
+                    found = true;
+                    for (int k = 0; k < at.length; k++)
+                        if (at[k].getSort() == Type.OBJECT && base(at[k].getInternalName()) != null && !knownJdkChain(mn, fr, f.getStack(b0 + k), depth + 1)) return false;
+                    break;
+                }
+            if (!found) return false;
+        }
+        return true;
+    }
+    /** the receiver is System.out / System.err / System.in (through copies) */
+    static boolean systemStd(MethodNode mn, Frame<SourceValue>[] fr, SourceValue v, int depth) {
+        if (v == null || v.insns.isEmpty() || depth > 8) return false;
+        for (AbstractInsnNode p : v.insns) {
+            int op = p.getOpcode();
+            if (op == Opcodes.GETSTATIC && ((FieldInsnNode) p).owner.equals("java/lang/System")) continue;
+            if (op == Opcodes.ALOAD || op == Opcodes.DUP || op == Opcodes.CHECKCAST || op == Opcodes.ASTORE) {
+                Frame<SourceValue> f = fr[mn.instructions.indexOf(p)];
+                if (f == null) return false;
+                SourceValue n = op == Opcodes.ALOAD ? f.getLocal(((VarInsnNode) p).var) : f.getStackSize() == 0 ? null : f.getStack(f.getStackSize() - 1);
+                if (!systemStd(mn, fr, n, depth + 1)) return false;
+                continue;
+            }
+            return false;
+        }
+        return true;
+    }
+    static boolean newOf(MethodNode mn, Frame<SourceValue>[] fr, SourceValue v, AbstractInsnNode nw) {
+        for (AbstractInsnNode q : v.insns) {
+            if (q == nw) return true;
+            if (q.getOpcode() == Opcodes.DUP) {
+                Frame<SourceValue> f = fr[mn.instructions.indexOf(q)];
+                if (f != null && f.getStackSize() > 0 && f.getStack(f.getStackSize() - 1).insns.contains(nw)) return true;
+            }
+        }
+        return false;
+    }
+    static void decor(String cp) throws Exception {
+        loadAll(cp);
+        // the delegate candidates: every concrete project stream body of a stream member, by base
+        for (ClassNode c : CLS.values()) {
+            String b = base(c.name);
+            if (b == null || (c.access & Opcodes.ACC_INTERFACE) != 0) continue;   // an abstract class's bodies are inherited
+            for (MethodNode m : c.methods)
+                if (concrete(m) && (m.access & Opcodes.ACC_STATIC) == 0 && !m.name.startsWith("<") && (m.access & Opcodes.ACC_PRIVATE) == 0)
+                    System.out.println("SUB\t" + b + "\t" + c.name + "." + m.name + m.desc);
+            // inherited project bodies of a concrete subclass are its supers' lines (same base): listed there
+        }
+        for (ClassNode c : CLS.values())
+            for (MethodNode mn : c.methods) {
+                if (mn.instructions == null || mn.instructions.size() == 0) continue;
+                Frame<SourceValue>[] fr = null;
+                Set<String> seen = new TreeSet<>();
+                for (AbstractInsnNode in : mn.instructions) {
+                    if (!(in instanceof MethodInsnNode mi) || mi.name.startsWith("<")) continue;
+                    if (mi.getOpcode() != Opcodes.INVOKEVIRTUAL && mi.getOpcode() != Opcodes.INVOKEINTERFACE) continue;
+                    if (!isJdk(mi.owner) || !decorator(mi.owner)) continue;
+                    if (fr == null) try { fr = new Analyzer<>(new SourceInterpreter()).analyze(c.name, mn); } catch (Exception e) { break; }
+                    Frame<SourceValue> f = fr[mn.instructions.indexOf(mi)];
+                    if (f == null) continue;
+                    SourceValue r = f.getStack(f.getStackSize() - Type.getArgumentTypes(mi.desc).length - 1);
+                    if (knownJdkChain(mn, fr, r, 0)) continue;
+                    seen.add(mi.owner + "." + mi.name + mi.desc + "\t" + base(mi.owner) + "\t" + (systemStd(mn, fr, r, 0) ? "system" : "unnamed"));
+                }
+                for (String x : seen) System.out.println(c.name + "." + mn.name + mn.desc + "\t" + x);
+            }
     }
     static String truth(String caller, String callee) {
         MethodNode mn = method(caller);
@@ -558,6 +698,11 @@ public final class CheckAdded {
                         String b = resolveUp(mi.owner, mi.name, mi.desc);
                         if (cc.equals(b) || cc.equals(mi.owner)) return "exact " + mi.owner;
                     } else if (isSubtype(cc, mi.owner) || isSubtype(mi.owner, cc)) return "dispatch " + mi.owner + "." + mi.name;
+                    // the callee's body INHERITED by a subtype of the site owner that the callee's own class is not
+                    // related to (ForwardingMultiset extends ForwardingCollection implements Multiset: a Multiset.isEmpty
+                    // site runs ForwardingCollection.isEmpty) — misjudged FALSE before this arm (a seed-kept edge, guava)
+                    else for (String s : subtypes(mi.owner))
+                        if (cc.equals(resolveUp(s, mi.name, mi.desc))) return "dispatch-inherited " + mi.owner + "." + mi.name + " via " + s;
                 }
                 String body = mi.getOpcode() == Opcodes.INVOKESTATIC ? mi.owner : resolveUp(mi.owner, mi.name, mi.desc);
                 if (body == null && !CLS.containsKey(mi.owner)) body = mi.owner;

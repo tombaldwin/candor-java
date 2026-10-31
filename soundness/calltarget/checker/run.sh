@@ -3,6 +3,7 @@
 #   bash soundness/calltarget/checker/run.sh build                      # compile against the pinned ASM jars
 #   bash soundness/calltarget/checker/run.sh added <rows> <added> <cp> [--seed N]
 #   bash soundness/calltarget/checker/run.sh edges <edges.tsv> <cp>
+#   bash soundness/calltarget/checker/run.sh decor <cp>                 # calls on a JDK stream decorator, delegate unnamed
 #   python3 soundness/calltarget/checker/poscal.py <mx> <pre> <post> <out> <this-dir>   # positive calibration
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -13,5 +14,6 @@ if [ "$1" = build ]; then
   "$JH/bin/javac" -nowarn -cp "$here/lib/*" -d "$here/cls" "$here/CheckAdded.java"; exit 0
 fi
 cmd=$1; shift
+if [ "$cmd" = decor ]; then exec "$JH/bin/java" -Xmx3g -cp "$here/cls:$here/lib/*" CheckAdded --decor "$@" < /dev/null; fi
 if [ "$cmd" = edges ]; then exec "$JH/bin/java" -Xmx3g -cp "$here/cls:$here/lib/*" CheckAdded --edges "$@" < /dev/null; fi
 exec "$JH/bin/java" -Xmx3g -cp "$here/cls:$here/lib/*" CheckAdded "$@" < /dev/null

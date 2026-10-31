@@ -31,7 +31,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   InputStreamReader(in)).readLine()` run the delegate's `read`, and the delegate can be a project stream. They read pure
   on 0.40.17, where some CALLERS were charged only through R32's by-name edges to the caller's own stream class, which
   never ran there (commons-compress `ArchiveStreamFactory.createArchiveInputStream`, tomcat `PEMFile`). `deny Unknown`
-  goes 0 → 1 on such a unit where some project override of the delegate base carries an effect the unit lacks; a
+  goes 0 → 1 on such a unit where some project override of the delegate base carries an effect the unit lacks — also for
+  a decorator body running on a project subclass (`super.readLine()` from a `BufferedReader` subclass); a
   delegate built in place from JDK streams, or `System.in/out/err`, stays clean. The decorators are derived (every public
   JDK stream class with a constructor taking a stream). `CANDOR_R1201_FLOOR` without `S6` turns it off.
 - **`ObjectOutputStream.writeObject` is no longer a `toString` sink**: the derivation read

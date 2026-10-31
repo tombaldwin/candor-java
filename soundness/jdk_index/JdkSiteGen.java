@@ -58,6 +58,7 @@ final class JdkSiteGen {
             try {
                 ClassNode cn = new ClassNode();
                 new ClassReader(Files.readAllBytes(p)).accept(cn, ClassReader.SKIP_FRAMES | ClassReader.SKIP_DEBUG);
+                dropDebugBranches(cn);
                 g.classes.put(cn.name, cn);
             } catch (Exception ignored) { }
         }
@@ -70,11 +71,40 @@ final class JdkSiteGen {
             try {
                 ClassNode cn = new ClassNode();
                 new ClassReader(Files.readAllBytes(p)).accept(cn, ClassReader.SKIP_FRAMES | ClassReader.SKIP_DEBUG);
+                dropDebugBranches(cn);
                 g.classes.put(cn.name, cn);
             } catch (Exception ignored) { }
         }
         g.run();
         return g.out;
+    }
+
+    /** Diagnostic-only flags, read as their default ({@code false}): a branch taken only when the flag is set is not
+     *  followed. {@code ObjectOutputStream.extendedDebugInfo} is {@code -Dsun.io.serialization.extendedDebugInfo}, off
+     *  unless a user turns it on to debug a NotSerializableException; its twenty {@code if (extendedDebugInfo)} blocks
+     *  push {@code obj.toString()} onto a debug stack. Followed, they made {@code writeObject(Object)} a toString sink
+     *  over every Serializable in a scan and charged effects that never run under a default JVM (hibernate's
+     *  {@code CollectionEntry.serialize}: fifty-seven project toString/hashCode bodies). Published 0.40.17 had no such
+     *  edge either, so a user who sets the flag is not made worse off than before this table. */
+    static final Set<String> DEBUG_FLAGS = Set.of("java/io/ObjectOutputStream.extendedDebugInfo");
+
+    /** {@code getstatic FLAG; ifeq L} becomes {@code goto L} (stack-neutral): the flag-set block is unreachable. */
+    static void dropDebugBranches(ClassNode cn) {
+        for (MethodNode m : cn.methods) {
+            if (m.instructions == null) continue;
+            for (AbstractInsnNode i = m.instructions.getFirst(); i != null; i = i.getNext()) {
+                if (i.getOpcode() != Opcodes.GETSTATIC) continue;
+                FieldInsnNode f = (FieldInsnNode) i;
+                if (!DEBUG_FLAGS.contains(f.owner + "." + f.name) || !f.desc.equals("Z")) continue;
+                AbstractInsnNode n = i.getNext();
+                if (n == null || n.getOpcode() != Opcodes.IFEQ) continue;
+                JumpInsnNode g = new JumpInsnNode(Opcodes.GOTO, ((JumpInsnNode) n).label);
+                m.instructions.set(n, g);
+                AbstractInsnNode prev = i.getPrevious();
+                m.instructions.remove(i);
+                i = prev == null ? m.instructions.getFirst() : prev;
+            }
+        }
     }
 
     // ------------------------------------------------------------------------------------------- hierarchy helpers

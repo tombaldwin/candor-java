@@ -7585,8 +7585,8 @@ public class Candor {
             // this method, with no visible concrete impl (DI-wired, external, or strategy)
             // → honest Unknown (SPEC §4). The `projectDeclaresMethod` gate is essential:
             // without it, a FRAMEWORK method merely INHERITED by a project abstract class
-            // (Struts `Action.getServletContext`/`saveMessages`/`isTokenValid`, called on a
-            // NEMsAction receiver) has no project override either, and would be mislabelled
+            // (a web framework's base-class helpers, e.g. `getServletContext`, called on a
+            // project subclass receiver) has no project override either, and would be mislabelled
             // Unknown — when it actually resolves to a superclass candor never loaded, i.e.
             // an ordinary external call (effect-free unless modelled, like every other lib
             // call). Only a method the project ITSELF declares is a real missing-impl. An

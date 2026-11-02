@@ -31,7 +31,10 @@ public enum DiagnosticCode {
      *  alert filter key on, and the two are opposite constructs — must-not-reach versus
      *  must-be-on-the-list, with opposite remedies. Sharing 009 would make every existing `forbid`
      *  suppression silently begin muting a class of violation its author never accepted. */
-    AS_EFF_011;
+    AS_EFF_011,
+    /** ⟨0.41⟩ a policy {@code accept} entry matched no violation of a rule this run evaluated — a STALE
+     *  acceptance (SPEC §6.2). Its own code: it is not a finding about the code but about the policy file. */
+    AS_EFF_012;
 
     /** The spec code string, e.g. {@code "AS-EFF-006"}. */
     public String code() {

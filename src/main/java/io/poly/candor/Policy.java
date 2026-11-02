@@ -460,6 +460,7 @@ final class Policy {
         for (String raw : lines) {
             String line = raw.split("#", 2)[0].trim();
             if (line.isEmpty()) continue;
+            if (line.split("\\s+")[0].equals("accept")) continue;   // ⟨0.41⟩ a directive, not a rule: nothing to evaluate
             String own = fatalBy.get(line);
             out.add(new String[]{line, own != null
                     ? own + " — this rule is NOT evaluated; the policy is refused rather than silently "
@@ -900,7 +901,106 @@ final class Policy {
         Map<String, EffectSet> inferred = gi.inferred();
         Map<String, TreeSet<String>> reasonClassAcc = gi.reasonClasses();
         List<String[]> synthHits = new ArrayList<>();   // ⟨0.23⟩ union entries a rule matched — DISCLOSED below
-        // AS-EFF-006: a method in scope must not perform (transitively) a denied effect.
+        // ⟨0.41⟩ `accept` lines: rows are COLLECTED per producing rule line and emitted after acceptance is decided,
+        // in the order they were found, so a run with no entry emits exactly what it always did.
+        Accept.begin(gi);
+        List<Accept.Row> rows006 = new ArrayList<>();
+        collectDenyRows(gi, unanswerable, synthHits, rows006);
+        v += Accept.settle(rows006);
+        // ⟨0.23⟩ THE SYNTHETIC ENTRIES A RULE MATCHED — said out loud, on stderr, without moving the
+        // verdict. A union entry is a republication of effects the implementers' own entries already
+        // carry, so skipping the ROW loses no reach; skipping it SILENTLY would lose the one thing a
+        // reader of a chained DEPENDENCY's report wants here, which is that the dependency publishes a
+        // dispatch surface reaching a denied effect.
+        if (!synthHits.isEmpty()) {
+            System.err.println("candor: note — " + synthHits.size() + " ⟨0.23⟩ interfaceUnion entr"
+                    + (synthHits.size() == 1 ? "y matches a policy rule and is NOT gated as a function"
+                                             : "ies match a policy rule and are NOT gated as functions")
+                    + ": the key names a BODILESS declaration, and the effects under it are the CHA union "
+                    + "over implementers, each of which IS gated under its own entry.");
+            for (String[] h : synthHits)
+                System.err.println("    `" + h[0] + "`  { " + h[1] + " }  would have matched  `" + h[2] + "`");
+        }
+        // Provable-purity DISCLOSURE (advisory — NEVER a violation, so `v`/exit are untouched): methods in a
+        // pure/deny scope that PASS but are Unknown (the Unknown could hide the forbidden effect — a
+        // fn/closure-injected port). Surfaces the gap automatically (eval/fixloop/DISPATCH-NOTE.md).
+        List<String[]> holes = new ArrayList<>();
+        for (String fn : gi.inDisplayOrder(inferred.keySet())) {
+            // Same predicate + upgrade reconstruction as `candor unverified` (Query) — one source of truth.
+            // `Set.of()` — the SCAN route withholds nothing: it recomputes every field the narrowing reads
+            // from source, so there is no absent channel for a filter to succeed on. See SPEC §3.1's note
+            // that neither unanswerable state is reachable in a report this engine WROTE.
+            PolicyRule.Deny r = unverifiedHoleRule(fn, inferred.get(fn), ctx().denyRules, gi, Set.of());
+            if (r != null) holes.add(new String[]{gi.disp(fn), ruleUpgrade(r, reasonClassesOf(gi, fn))[1]});
+        }
+        if (!holes.isEmpty()) {
+            System.err.println("candor-java: note — " + holes.size()
+                    + " method(s) PASS the policy but are Unknown (purity NOT verified — the Unknown could hide a forbidden effect):");
+            for (String[] h : holes) System.err.println("    `" + h[0] + "`  → add  `" + h[1] + "`");
+            System.err.println("  (advisory; add the upgrade(s) to REQUIRE provable purity, or run `candor unverified` for detail — the gate verdict is unchanged)");
+        }
+        // AS-EFF-008: a method in an allow-listed scope may reach ONLY the listed literals — Net hosts
+        // (matched by hostname), Exec commands (by basename), Fs paths (by path-prefix at a boundary).
+        // Certifies the VISIBLE literal surface (propagated transitively). A method whose surface is empty OR
+        // INCOMPLETE (a structurally-invisible reach — see surfaceIncomplete) can't be certified: fail-closed,
+        // so a benign visible literal can't MASK an invisible forbidden endpoint.
+        Map<String, TreeSet<String>> incomplete = gi.surfaceIncomplete();
+        Map<String, TreeSet<String>> hostFixpoint = gi.hosts();
+        v += checkAllowlist(gi, "Net", hostFixpoint, incomplete,
+                (allowed, reached) -> allowed.stream().anyMatch(a -> hostPart(a).equals(hostPart(reached))));
+        // `Llm` ⟨0.13⟩ rides Net's host literal (SPEC §1) — `allow Llm <host…>` restricts which MODEL
+        // hosts a scope may reach, matched by hostname like Net. The reached surface is the SAME hostsDirect
+        // (an Llm host WAS captured as a Net host literal); the incompleteness gate keys off "Net" (a
+        // runtime/masked host marks the Net surface incomplete → `allow Llm` fails closed too, so a benign
+        // visible model host can't MASK an invisible forbidden one).
+        v += checkAllowlist(gi, "Llm", hostFixpoint, incompleteAsLlm(incomplete),
+                (allowed, reached) -> allowed.stream().anyMatch(a -> hostPart(a).equals(hostPart(reached))));
+        v += checkAllowlist(gi, "Exec", gi.cmds(), incomplete,
+                (allowed, reached) -> allowed.stream().anyMatch(a -> cmdBase(a).equals(cmdBase(reached))));
+        v += checkAllowlist(gi, "Fs", gi.paths(), incomplete,
+                (allowed, reached) -> allowed.stream().anyMatch(a -> pathCovered(a, reached)));
+        v += checkAllowlist(gi, "Db", gi.tables(), incomplete,
+                (allowed, reached) -> allowed.stream().anyMatch(a -> tableCovered(a, reached)));
+        // AS-EFF-009: a method in scope A must not transitively reach into scope B (over the call graph).
+        List<Accept.Row> rows009 = new ArrayList<>();
+        collectForbidRows(gi, rows009);
+        v += Accept.settle(rows009);
+        // ⟨0.29⟩ AS-EFF-011 — `only A -> B …`: a method in A may reach A and the listed scopes, NOTHING
+        // else. The same walk as the `forbid` arm above with the test INVERTED, and the inversion is the
+        // point: `forbid` fails OPEN, so a leaf can only be protected by enumerating what it must not
+        // reach — a list that does not cover a package added tomorrow. `only` fails SAFE.
+        //
+        // THE WALK STOPS AT A PERMITTED SCOPE. A permitted callee's own dependencies are governed by the
+        // rules about IT; descending past it would make `only` demand the transitive closure of
+        // everything you permit, which is the same enumeration-that-rots one level down. `from` IS
+        // descended through — a method in A calling another method in A that reaches infra is still A
+        // reaching infra.
+        for (PolicyRule.Only r : ctx().onlyRules) {
+            for (String fn : gi.inDisplayOrder(gi.edges().keySet())) {
+                if (!scopeMatches(gi.disp(fn), r.from())) continue;
+                String hit = reachesUnpermitted(gi, fn, r);
+                if (hit != null) {
+                    // ⟨0.29⟩ ITS OWN CODE — see DiagnosticCode.AS_EFF_011.
+                    diagUnit(DiagnosticCode.AS_EFF_011, List.of(), List.of(), List.of(), gi.unit(fn),
+                            "`%s` reaches `%s`, which this permission rule does "
+                            + "not permit: `%s`", gi.disp(fn), gi.disp(hit), r.src().trim());
+                    v++;
+                }
+            }
+        }
+        v += Accept.finish();          // ⟨0.41⟩ stale entries are AS-EFF-012 rows; `accepted` rides the verdict
+        Accept.announce(v);
+        discloseZeroMatchRules(gi);
+        return v;
+    }
+
+    /** AS-EFF-006 rows, COLLECTED (not emitted): one {@link Accept.Row} per (rule line, unit) the deny/pure rules fire
+     *  on, in the order the gate has always emitted them. Shared by {@link #gate} and {@link #acceptedUnits} so
+     *  "what would be accepted" is computed from the very rows the gate would have emitted, never a second copy. */
+    private static void collectDenyRows(GateInput gi, Set<String> unanswerable, List<String[]> synthHits,
+                                        List<Accept.Row> rows006) {
+        Map<String, EffectSet> inferred = gi.inferred();
+        Map<String, TreeSet<String>> reasonClassAcc = gi.reasonClasses();
         for (String fn : gi.inDisplayOrder(inferred.keySet())) {
             // ⟨0.32⟩ `fn` is the unit KEY; `name` is what a policy scope matches and what a row says. The
             // two are the same string on the scan route and wherever no display map was supplied.
@@ -1011,108 +1111,60 @@ final class Policy {
                             : java.util.List.of();
                     // ⟨0.32⟩ the NAME, never the unit key: §3.3.1 pins `gate --report`'s violation rows
                     // byte-equal to `scan --policy`'s, and the scan route has only names to print.
+                    final String fnKey = fn, fnName = name;
+                    rows006.add(new Accept.Row(Accept.key(r.src()), "AS-EFF-006", name, gi.unit(fn), bn,
+                            Accept.any() ? reasonClassNames(gi, fn) : Set.of(), () ->
                     diagUnit(DiagnosticCode.AS_EFF_006, bn, reasonClass, netClass,
-                            gi.unit(fn),   // ⟨0.32⟩ SPEC §2 — the unit, BESIDE the name that a scope matches
+                            gi.unit(fnKey),   // ⟨0.32⟩ SPEC §2 — the unit, BESIDE the name that a scope matches
                             "`%s` performs { %s }, forbidden by policy%s: `%s`",
-                            name, String.join(", ", bn),
-                            r.scope().isEmpty() ? "" : " (scope `" + r.scope() + "`)", r.src());
-                    v++;
+                            fnName, String.join(", ", bn),
+                            r.scope().isEmpty() ? "" : " (scope `" + r.scope() + "`)", r.src())));
                 }
             }
         }
-        // ⟨0.23⟩ THE SYNTHETIC ENTRIES A RULE MATCHED — said out loud, on stderr, without moving the
-        // verdict. A union entry is a republication of effects the implementers' own entries already
-        // carry, so skipping the ROW loses no reach; skipping it SILENTLY would lose the one thing a
-        // reader of a chained DEPENDENCY's report wants here, which is that the dependency publishes a
-        // dispatch surface reaching a denied effect.
-        if (!synthHits.isEmpty()) {
-            System.err.println("candor: note — " + synthHits.size() + " ⟨0.23⟩ interfaceUnion entr"
-                    + (synthHits.size() == 1 ? "y matches a policy rule and is NOT gated as a function"
-                                             : "ies match a policy rule and are NOT gated as functions")
-                    + ": the key names a BODILESS declaration, and the effects under it are the CHA union "
-                    + "over implementers, each of which IS gated under its own entry.");
-            for (String[] h : synthHits)
-                System.err.println("    `" + h[0] + "`  { " + h[1] + " }  would have matched  `" + h[2] + "`");
-        }
-        // Provable-purity DISCLOSURE (advisory — NEVER a violation, so `v`/exit are untouched): methods in a
-        // pure/deny scope that PASS but are Unknown (the Unknown could hide the forbidden effect — a
-        // fn/closure-injected port). Surfaces the gap automatically (eval/fixloop/DISPATCH-NOTE.md).
-        List<String[]> holes = new ArrayList<>();
-        for (String fn : gi.inDisplayOrder(inferred.keySet())) {
-            // Same predicate + upgrade reconstruction as `candor unverified` (Query) — one source of truth.
-            // `Set.of()` — the SCAN route withholds nothing: it recomputes every field the narrowing reads
-            // from source, so there is no absent channel for a filter to succeed on. See SPEC §3.1's note
-            // that neither unanswerable state is reachable in a report this engine WROTE.
-            PolicyRule.Deny r = unverifiedHoleRule(fn, inferred.get(fn), ctx().denyRules, gi, Set.of());
-            if (r != null) holes.add(new String[]{gi.disp(fn), ruleUpgrade(r, reasonClassesOf(gi, fn))[1]});
-        }
-        if (!holes.isEmpty()) {
-            System.err.println("candor-java: note — " + holes.size()
-                    + " method(s) PASS the policy but are Unknown (purity NOT verified — the Unknown could hide a forbidden effect):");
-            for (String[] h : holes) System.err.println("    `" + h[0] + "`  → add  `" + h[1] + "`");
-            System.err.println("  (advisory; add the upgrade(s) to REQUIRE provable purity, or run `candor unverified` for detail — the gate verdict is unchanged)");
-        }
-        // AS-EFF-008: a method in an allow-listed scope may reach ONLY the listed literals — Net hosts
-        // (matched by hostname), Exec commands (by basename), Fs paths (by path-prefix at a boundary).
-        // Certifies the VISIBLE literal surface (propagated transitively). A method whose surface is empty OR
-        // INCOMPLETE (a structurally-invisible reach — see surfaceIncomplete) can't be certified: fail-closed,
-        // so a benign visible literal can't MASK an invisible forbidden endpoint.
-        Map<String, TreeSet<String>> incomplete = gi.surfaceIncomplete();
-        Map<String, TreeSet<String>> hostFixpoint = gi.hosts();
-        v += checkAllowlist(gi, "Net", hostFixpoint, incomplete,
-                (allowed, reached) -> allowed.stream().anyMatch(a -> hostPart(a).equals(hostPart(reached))));
-        // `Llm` ⟨0.13⟩ rides Net's host literal (SPEC §1) — `allow Llm <host…>` restricts which MODEL
-        // hosts a scope may reach, matched by hostname like Net. The reached surface is the SAME hostsDirect
-        // (an Llm host WAS captured as a Net host literal); the incompleteness gate keys off "Net" (a
-        // runtime/masked host marks the Net surface incomplete → `allow Llm` fails closed too, so a benign
-        // visible model host can't MASK an invisible forbidden one).
-        v += checkAllowlist(gi, "Llm", hostFixpoint, incompleteAsLlm(incomplete),
-                (allowed, reached) -> allowed.stream().anyMatch(a -> hostPart(a).equals(hostPart(reached))));
-        v += checkAllowlist(gi, "Exec", gi.cmds(), incomplete,
-                (allowed, reached) -> allowed.stream().anyMatch(a -> cmdBase(a).equals(cmdBase(reached))));
-        v += checkAllowlist(gi, "Fs", gi.paths(), incomplete,
-                (allowed, reached) -> allowed.stream().anyMatch(a -> pathCovered(a, reached)));
-        v += checkAllowlist(gi, "Db", gi.tables(), incomplete,
-                (allowed, reached) -> allowed.stream().anyMatch(a -> tableCovered(a, reached)));
-        // AS-EFF-009: a method in scope A must not transitively reach into scope B (over the call graph).
+    }
+
+    /** AS-EFF-009 rows, collected — see {@link #collectDenyRows}. */
+    private static void collectForbidRows(GateInput gi, List<Accept.Row> rows009) {
         for (PolicyRule.Forbid r : ctx().forbidRules) {
             for (String fn : gi.inDisplayOrder(gi.edges().keySet())) {
                 if (!scopeMatches(gi.disp(fn), r.from())) continue;
                 String hit = reachesScope(gi, fn, r.to());
                 if (hit != null) {
-                    diagUnit(DiagnosticCode.AS_EFF_009, List.of(), List.of(), List.of(), gi.unit(fn),
+                    final String fnKey = fn, hitKey = hit;
+                    rows009.add(new Accept.Row(Accept.key(r.src()), "AS-EFF-009", gi.disp(fn), gi.unit(fn), List.of(),
+                            Set.of(), () ->
+                    diagUnit(DiagnosticCode.AS_EFF_009, List.of(), List.of(), List.of(), gi.unit(fnKey),
                             "`%s` reaches into a forbidden layer (via `%s`), "
-                            + "violating policy: `forbid %s -> %s`", gi.disp(fn), gi.disp(hit),
-                            r.from(), r.to());
-                    v++;
+                            + "violating policy: `forbid %s -> %s`", gi.disp(fnKey), gi.disp(hitKey),
+                            r.from(), r.to())));
                 }
             }
         }
-        // ⟨0.29⟩ AS-EFF-011 — `only A -> B …`: a method in A may reach A and the listed scopes, NOTHING
-        // else. The same walk as the `forbid` arm above with the test INVERTED, and the inversion is the
-        // point: `forbid` fails OPEN, so a leaf can only be protected by enumerating what it must not
-        // reach — a list that does not cover a package added tomorrow. `only` fails SAFE.
-        //
-        // THE WALK STOPS AT A PERMITTED SCOPE. A permitted callee's own dependencies are governed by the
-        // rules about IT; descending past it would make `only` demand the transitive closure of
-        // everything you permit, which is the same enumeration-that-rots one level down. `from` IS
-        // descended through — a method in A calling another method in A that reaches infra is still A
-        // reaching infra.
-        for (PolicyRule.Only r : ctx().onlyRules) {
-            for (String fn : gi.inDisplayOrder(gi.edges().keySet())) {
-                if (!scopeMatches(gi.disp(fn), r.from())) continue;
-                String hit = reachesUnpermitted(gi, fn, r);
-                if (hit != null) {
-                    // ⟨0.29⟩ ITS OWN CODE — see DiagnosticCode.AS_EFF_011.
-                    diagUnit(DiagnosticCode.AS_EFF_011, List.of(), List.of(), List.of(), gi.unit(fn),
-                            "`%s` reaches `%s`, which this permission rule does "
-                            + "not permit: `%s`", gi.disp(fn), gi.disp(hit), r.src().trim());
-                    v++;
-                }
-            }
-        }
-        discloseZeroMatchRules(gi);
-        return v;
+    }
+
+    /** ⟨0.41⟩ The NAMES of the units that carry an ACCEPTED violation under the parsed policy over {@code gi}: the
+     *  gate's own rows (collected, never emitted) pushed through {@link Accept#settle} in dry mode. For the advisory
+     *  verbs, which must not describe such a unit as clean (§6.2). Empty when the policy has no entry. */
+    static Set<String> acceptedUnits(GateInput gi, Set<String> unanswerable) {
+        if (!Accept.any()) return Set.of();
+        Accept.begin(gi);
+        List<Accept.Row> r6 = new ArrayList<>(), r9 = new ArrayList<>();
+        collectDenyRows(gi, unanswerable, new ArrayList<>(), r6);
+        collectForbidRows(gi, r9);
+        Accept.settleDry(r6);
+        Accept.settleDry(r9);
+        return Accept.acceptedNames();
+    }
+
+    /** ⟨0.41⟩ The reason-class TOKENS a row's `Unknown` is judged against — the same transitive set the row's
+     *  own {@code reasonClass} field carries, floored at {@code unresolved} exactly like the gate's matcher
+     *  ({@link #reasonClassesOf}), so a function whose classes are not determinable is covered only by an
+     *  entry that lists {@code unresolved}, never vacuously. */
+    private static Set<String> reasonClassNames(GateInput gi, String fn) {
+        Set<String> out = new TreeSet<>();
+        for (ReasonClass c : reasonClassesOf(gi, fn)) out.add(c.token());
+        return out;
     }
 
     /** ⟨0.29⟩ The first function {@code start} transitively reaches that an {@code only} rule permits
@@ -1599,6 +1651,11 @@ final class Policy {
         return a;
     }
 
+    /** ⟨0.41⟩ for {@link Accept}: the cursor the `ignored` rows are attributed to, and the shared vocabulary. */
+    static void setCursor(int lineNo, String raw) { curLineNo = lineNo; curRawLine = raw; }
+    static boolean isUnknownAlias(String name) { return ctx().unknownAliases.containsKey(name); }
+    static List<String> knownEffectNamesForAccept() { return knownEffectNames(); }
+
     /** The effects an `allow` may name — those carrying a literal surface (AS-EFF-008). Kept beside the
      *  branch that enforces it, for the same reason as above. */
     private static final List<String> ALLOW_EFFECTS = List.of("Db", "Exec", "Fs", "Llm", "Net");
@@ -1867,6 +1924,8 @@ final class Policy {
             return false;
         }
         int lineNo = 0;
+        List<Accept.Pending> acceptPending = new ArrayList<>();   // ⟨0.41⟩ resolved after the loop: an entry may name a LATER rule
+        Accept.entries.clear();
         for (String raw : lines) {
             // ⟨0.28⟩ SPEC §6.2 `ignored` — the verdict document carries {line, text, reason} for every
             // line the parse dropped, so the current 1-based line number and the VERBATIM source line
@@ -1883,6 +1942,11 @@ final class Policy {
             if (line.isEmpty()) continue;
             String[] t = line.split("\\s+");
             switch (t[0]) {
+                // ⟨0.41⟩ `accept` is a DIRECTIVE, not a rule: it never fires and is not counted by the zero-rules check.
+                case "accept": {
+                    acceptPending.add(new Accept.Pending(lineNo, raw, t));
+                    break;
+                }
                 case "deny": {
                     // SPEC §6.2: read tokens left-to-right; each known effect (or `Unknown`) joins the
                     // forbidden set; the FIRST non-effect token is the scope and ENDS the rule. A `deny`
@@ -2075,6 +2139,15 @@ final class Policy {
                             "unknown rule kind `" + t[0] + "`");
                     break;
             }
+        }
+        if (!acceptPending.isEmpty()) {
+            Accept.resolve(acceptPending,
+                    ctx().denyRules.subList(denyBefore, ctx().denyRules.size()),
+                    ctx().forbidRules.subList(forbidBefore, ctx().forbidRules.size()),
+                    ctx().allowRules.subList(allowBefore, ctx().allowRules.size()),
+                    ctx().onlyRules.subList(onlyBefore, ctx().onlyRules.size()));
+            // the `ignored` rows are listed in source order, and accept lines were judged after the loop
+            policyErrors.sort(java.util.Comparator.comparingInt(PolicyTokenError::lineNo));
         }
         // ⟨0.24⟩ the rules PARSED, but at least one names a class token this engine cannot honour — a GATE
         // caller takes the unreadable-policy posture over it (exit 2), never the rewritten rule. The

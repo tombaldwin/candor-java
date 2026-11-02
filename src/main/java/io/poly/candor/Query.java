@@ -3395,6 +3395,13 @@ public final class Query {
         // and per rule), so the two arms of that refusal reach the same answer by construction; `clean`
         // survives to rank the EXIT, which is about what this run did find.
         boolean clean = holes.isEmpty() && unjudged.isEmpty() && unevaluated.isEmpty();
+        // ⟨0.41⟩ SPEC §6.2: `unverified` MUST NOT describe a unit with an ACCEPTED violation as clean. The accepted
+        // units come from the gate's own rows (Policy#acceptedUnits); with any, the all-clear is WITHDRAWN (the prose
+        // sentence and the JSON `ok`), exactly as an unevaluated rule withdraws it. The exit does not move: this verb
+        // answers about Unknown holes (§3.3.1 `--strict`), not about violations.
+        Accept.setUnevaluated(unevaluated);
+        java.util.Set<String> acceptedUnits = Policy.acceptedUnits(gi, scoped.triples());
+        if (!acceptedUnits.isEmpty()) clean = false;
         if (json) {
             List<Map<String, Object>> items = new ArrayList<>();
             for (Hole h : holes) {
@@ -3443,6 +3450,13 @@ public final class Query {
         advisoryIncompleteNote("unverified", unanalyzed, INCOMPLETE_TAIL_STRICT);
         advisoryJudgedNothingNote("unverified", comp);
         if (holes.isEmpty() && unjudged.isEmpty()) {
+            if (unevaluated.isEmpty() && !comp.mustHedge() && !acceptedUnits.isEmpty()) {
+                System.out.println("candor unverified: no Unknown holes — but " + acceptedUnits.size()
+                        + " function(s) carry a violation that a policy `accept` line took out of the gate ("
+                        + String.join(", ", acceptedUnits) + "). NOT described as clean: an accepted violation is "
+                        + "still a violation, only a reviewed one.");
+                return 0;
+            }
             if (unevaluated.isEmpty() && !comp.mustHedge()) {
                 System.out.println("candor unverified: every function in a pure/deny layer is PROVABLY clean (no Unknown holes) ✓");
                 return 0;
@@ -4579,6 +4593,7 @@ public final class Query {
         Candor.gateZeroMatch.clear();
         int violations;
         try {
+            Accept.setUnevaluated(unevaluated);   // ⟨0.41⟩ entries of a rule this route could not judge are `unjudged`
             violations = Policy.gate(gi, scoped.triples());
         } finally {
             Candor.diagOut = prior;

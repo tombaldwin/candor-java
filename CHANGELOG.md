@@ -9,6 +9,24 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **`accept` lines for KNOWN policy violations (SPEC §6.2 ⟨0.41⟩, reference engine; the declared `spec` stays
+  ⟨0.40⟩ until the family floor moves).** `accept <fn> <Effect>… for <rule tokens> because <reason>` takes ONE
+  named row out of `violations` and lists it in a new `accepted` verdict key (statuses `accepted`, `exceeded`,
+  `ambiguous`, `unjudged`). A row is accepted only when the entry names the producing rule LINE (by its raw
+  tokens), the unit's exact `fn` (no prefix, no descriptor folding), and covers every effect of the row (an
+  `Unknown` only under an explicit `Unknown[class,…]` containing the row's `reasonClass`). Anything this engine
+  cannot read exactly stays red: a malformed line is ignored and listed in `ignored`; a positional key (a javac
+  `lambda$m$N`, an anonymous or local class `C$1`) is refused — accept the enclosing method and its entry also
+  covers the lambda it calls, but only when the same entry accepts the enclosing row in the same run and the
+  lambda's effects are a subset; `(hash, fn)` twins are accepted by neither; `allow` and `only` lines cannot be
+  accepted. A STALE entry is a new violation, `AS-EFF-012` (exit 1), whose message names the policy line and says
+  to delete it; an entry whose function now does more prints what changed and what to do. The human channel
+  prints `N violation(s) accepted by policy; M new` on every run that accepted anything. An all-accepted run
+  beside an unevaluated rule or an incomplete analysis exits 2, and `unverified` no longer calls a layer
+  PROVABLY clean while an accepted violation is in it. Without `accept` lines every verdict, report and exit code
+  is byte-identical (42 fixture/policy tuples across scan, `gate --report`, `unverified` and `fix-gate`).
+  Pinned by conformance PART 105.
+
 - **The baseline-regeneration remedy now names a command that runs.** Every refusal that said
   `candor <target> --json <baseline>` (stale build, no provenance header, unparseable, absent, AS-EFF-005
   re-record) printed a command the engine itself refused: with the baseline wired by `CANDOR_BASELINE` or

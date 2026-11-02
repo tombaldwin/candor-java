@@ -120,6 +120,8 @@ public class Candor {
      *  KNOWN_EFFECTS, INJECTION, PATH_CTOR_OWNERS) are constants, not state, and are left untouched. */
     static void resetState() {
         newContext();
+        Accept.entries.clear();     // ⟨0.41⟩ the `accept` entries and verdict list are per-run state like the rules
+        Accept.accepted = null;
     }
 
     /** The analysis core, factored out of {@link #main} so it is re-entrant (resets the thread's context
@@ -2882,7 +2884,12 @@ public class Candor {
         out.put("analyzed", an);
         policyVocabularyJson(out);
         netPartnersJson(out);
-        out.put("violations", gateViolations);
+        // ⟨0.41⟩ SPEC §6.2: an exit-2 incomplete verdict "makes no claim about violations", and PART 105 pins the
+        // document WITHOUT the key when a policy carries `accept` lines. Only then: with no `accept` entry the
+        // incomplete document keeps the `violations: []` every engine has always written (byte-identical, and
+        // pinned by the §3.3.1 precedence part). An incomplete run that also holds a violation is exit 1 and
+        // keeps the key.
+        if (!(incomplete && Accept.any() && gateViolations.isEmpty())) out.put("violations", gateViolations);
         // ⟨0.24⟩ THE RULES THIS RUN COULD NOT EVALUATE. A verdict that exits 1 over a policy one of whose
         // rules was refused is CERTAIN about the violation and silent about the rest — so the rest is said
         // here, in the same document, rather than only on a stderr line a CI wrapper discards. Omitted when
@@ -2904,6 +2911,10 @@ public class Candor {
         // from `unevaluated` (rules that PARSED and could not be answered); never consulted for `ok`.
         var ignored = Policy.ignoredLinesJson();
         if (!ignored.isEmpty()) out.put("ignored", ignored);
+        // ⟨0.41⟩ SPEC §6.2 `accepted` — the rows a policy `accept` line took out of `violations`. A VERDICT key:
+        // omitted when no `accept` line became an entry (a policy without the directive keeps a byte-identical
+        // verdict) and from every exit-2 document, which makes no claim about violations.
+        if (Accept.accepted != null && !incomplete) out.put("accepted", Accept.accepted);
         // ⟨0.21⟩ (Gap 2) the machine-legible incompleteness: the units candor couldn't analyze, so a CI/agent
         // reading the JSON learns WHY the gate can't certify — the stderr warning alone used to hide this from
         // a machine. `incomplete:true` + the list; the caller exits 2 (could-not-fully-evaluate). Tom's call

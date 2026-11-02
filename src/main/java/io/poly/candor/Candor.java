@@ -203,7 +203,7 @@ public class Candor {
                 System.err.println("        The pin and the committed baseline move together — a newer engine resolves more");
                 System.err.println("        dispatch, so its report is not comparable with a baseline the pinned engine wrote.");
                 System.err.println("        Either run the pinned engine, or update the pin and regenerate the baseline in the");
-                System.err.println("        same change. Exit 2 (unevaluable), not 1 — this is not a policy violation.");
+                System.err.println("        same change (candor <target> --no-baseline --json <baseline>). Exit 2 (unevaluable), not 1 — this is not a policy violation.");
                 System.exit(2);
             }
             case UNDETERMINED -> {
@@ -687,6 +687,11 @@ public class Candor {
      * it is assigned from the config only AFTER the config load, which is long after arming has written.
      */
     static String prePeekClasspath;
+    /** {@code --no-baseline}: this run RECORDS a baseline, so the regression guard (and the baseline's
+     *  collision with {@code --json}) is skipped. This is the only runnable regeneration command: with the
+     *  baseline wired by env or {@code .candor/config}, a bare {@code candor <target> --json <baseline>} is
+     *  refused (it names the guard's own input) and any other sink still ends exit 2 against a stale one. */
+    static boolean noBaselineFlag;
 
     static boolean declaresAnnotationProcessor(Path jar) {
         try (java.util.zip.ZipFile z = new java.util.zip.ZipFile(jar.toFile())) {
@@ -1698,6 +1703,9 @@ public class Candor {
                                                 consumes); on a scan, --json <file> writes the report there,
                                                 bare --json prints it to stdout (pipeable — `candor <classes>
                                                 --json | jq .`; report envelope only, no sidecars)
+                      --no-baseline             record a baseline: skip the regression guard (CANDOR_BASELINE /
+                                                config `baseline`) for this run. Needs --json <file>. This is
+                                                the regeneration command: `candor <target> --no-baseline --json <baseline>`
                       --gate-json <file>        write the structured gate verdict { spec, ok, violations }
                                                 as JSON; `-` streams it to stdout
                       --agents                  print the agent contract embedded in this build (AGENTS.md)
@@ -1947,7 +1955,7 @@ public class Candor {
         }
         // The first arg is the scan target (a dir/jar) — a flag there is a typo or a newer-doc flag
         // an older jar doesn't know; fail loudly rather than scan a path named after it.
-        var scanFlags = java.util.Set.of("--json", "--policy", "--gate-json", "--peek-classpath"); // --agents handled above; the rest are unknown here
+        var scanFlags = java.util.Set.of("--json", "--policy", "--gate-json", "--peek-classpath", "--no-baseline"); // --agents handled above; the rest are unknown here
         String jsonOut = null, policyArg = null, gateJson = null, peekClasspath = null;
         // ── SPEC §3.3.1 ⟨0.27⟩ ARM FIRST. This pre-pass learns the sink and the run's inputs with NO side
         // effects, so that (a) the collision check can run before anything is written, and (b) arming
@@ -1964,6 +1972,7 @@ public class Candor {
         // while rust/ts/swift wrote a refusal. Flags-before-positional is not an exotic spelling, and
         // §3.3 names an unknown flag as an exit-2 cause that must leave a refusal.
         String preGate = null, prePolicy = null, preTarget = null;
+        noBaselineFlag = false;
         prePeekClasspath = null;   // this pre-pass owns the field; never inherit a previous main()'s value
         // ⟨0.28⟩ Was `--json` requested in STDOUT form (bare, or followed by a flag)? And was any
         // `--gate-json -` in the argv (which would also claim stdout)? Learned in this same pre-pass so
@@ -2011,6 +2020,7 @@ public class Candor {
             // parse loop" defect this rung already paid for once on `--policy`.
             else if (args[i].equals("--peek-classpath") && hasVal && !args[i + 1].startsWith("-"))
                 prePeekClasspath = args[++i];
+            else if (args[i].equals("--no-baseline")) noBaselineFlag = true;
             else if (args[i].equals("--json") && hasVal && !args[i + 1].startsWith("-")) {
                 preJsonFile = args[++i];                                                        // --json <file>
                 preJsonSinks.add(preJsonFile);
@@ -2202,6 +2212,8 @@ public class Candor {
                 // valueless form is no longer an error — it's the pipe form (`candor <classes> --json | jq`).
                 if (i + 1 < args.length && !args[i + 1].startsWith("-")) jsonOut = args[++i];
                 else jsonOut = "-";
+            } else if (args[i].equals("--no-baseline")) {
+                // consumed by the pre-pass (it must be known before the input set is computed)
             } else if (args[i].equals("--peek-classpath")) {
                 // ⟨0.32⟩ THE ONLY SAFE WAY TO WIDEN THE PEEK'S CLASSPATH — and the safety is in WHO
                 // CHOOSES. Resolving a tree's own pom/lockfile into ~/.m2 would let the artifact being
@@ -2468,6 +2480,17 @@ public class Candor {
         // Gate modes resolve through the config layer: CLI flag → CANDOR_* env → .candor/config → default.
         String strict = config.value("strict", Mode.CONFORMANCE.envVar());
         String baseline = config.value("baseline", Mode.BASELINE.envVar());
+        if (noBaselineFlag) {
+            if (jsonOut == null || jsonOut.equals("-")) {
+                System.err.println("candor: --no-baseline records a baseline, so it needs --json <file> "
+                        + "(it skips the regression guard for this run and would otherwise gate nothing)");
+                System.exit(2);
+            }
+            if (baseline != null)
+                System.err.println("candor-java: --no-baseline: the regression guard against " + baseline
+                        + " is skipped — this run records " + jsonOut + ", it does not gate.");
+            baseline = null;
+        }
         String noAmbient = config.value("no-ambient", Mode.NO_AMBIENT.envVar());
         // ⟨0.24⟩ the SAME resolved path the vocabulary anchored on above — one resolution, so the anchor and
         // the gate cannot disagree about which file is the policy (`--policy` still takes precedence).
@@ -3151,7 +3174,7 @@ public class Candor {
             //       the wreckage back and blamed it ("the baseline call-graph sidecar beside base.json
             //       is corrupt/unreadable") — exit 2 with the operator's baseline pair destroyed. The
             //       config `baseline` spelling destroyed it identically through --gate-json.
-            if (e[0].equals("CANDOR_BASELINE")) addReportInput(out, v, e[1]);
+            if (e[0].equals("CANDOR_BASELINE")) { if (!noBaselineFlag) addReportInput(out, v, e[1]); }
             else out.add(new String[]{v, e[1]});
         }
         String deps = System.getenv("CANDOR_DEPS");
@@ -3212,6 +3235,7 @@ public class Candor {
                     if (key.equals("policy")) {
                         out.add(new String[]{val, "the config's `policy`"});
                     } else if (key.equals("baseline")) {
+                        if (noBaselineFlag) continue;
                         // The config spelling of CANDOR_BASELINE — SPEC records that a policy declared
                         // via `.candor/config` rather than a flag was the spelling that defeated the
                         // FIRST version of this guard in all four engines, so the sidecar expansion

@@ -9,6 +9,14 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **The baseline-regeneration remedy now names a command that runs.** Every refusal that said
+  `candor <target> --json <baseline>` (stale build, no provenance header, unparseable, absent, AS-EFF-005
+  re-record) printed a command the engine itself refused: with the baseline wired by `CANDOR_BASELINE` or
+  `.candor/config`, `--json` named the guard's own input (exit 2, nothing written), and any other sink still
+  exited 2 against a stale baseline. New `--no-baseline --json <file>` records a baseline without running the
+  regression guard (stderr says it was skipped; it needs `--json <file>`, else exit 2). All remedy strings now
+  print it; `smoke.sh` extracts each printed command from the real refusal and RUNS it.
+
 ## [0.40.18] — 2026-10-31
 
 - **`jbang-catalog.json` points at the v0.40.18 jar.**

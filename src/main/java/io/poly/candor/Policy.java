@@ -127,17 +127,17 @@ final class Policy {
                             + "file is not there — failing (exit 2). A checked-in declaration says this repo HAS "
                             + "a baseline, so an absent one was deleted or never committed, and the guard "
                             + "passing green over it is a gate that silently stopped gating. Commit it, or "
-                            + "record one: candor <target> --json " + path);
+                            + "record one: candor <target> --no-baseline --json " + path);
                     System.exit(2);
                 }
                 System.err.println("candor-java: CANDOR_BASELINE " + path + " does not exist — the "
-                        + "regression guard is not active (record one: candor <target> --json " + path + ").");
+                        + "regression guard is not active (record one: candor <target> --no-baseline --json " + path + ").");
                 return 0;
             }
             System.err.println("candor-java: CANDOR_BASELINE " + path + " exists but could not be parsed "
                     + "(corrupt/truncated?) — failing (exit 2); the guard must not silently pass on an "
                     + "unreadable baseline (the unreadable-policy class, §6.2). Regenerate it: candor "
-                    + "<target> --json " + path);
+                    + "<target> --no-baseline --json " + path);
             System.exit(2);
         }
         // §2.1: a baseline is comparable only to its OWN producing version — a stale baseline is INVALID
@@ -153,7 +153,7 @@ final class Policy {
         if (baseVersion == null) {
             System.err.println("candor-java: the baseline " + path + " has no provenance header (a legacy/"
                     + "bare-array report) — a baseline is comparable only to its producing build (§2.1)."
-                    + " Failing (exit 2); regenerate it with this build: candor <target> --json " + path);
+                    + " Failing (exit 2); regenerate it with this build: candor <target> --no-baseline --json " + path);
             System.exit(2);
         }
         if (!baseVersion.equals(current)) {
@@ -161,7 +161,7 @@ final class Policy {
                     + baseVersion + " but this is build " + current + " — coverage batches change reports,"
                     + " so an engine swap is baseline-invalidating and the gate cannot evaluate (exit 2,"
                     + " the unreadable-policy class; never a silent skip, never a bogus AS-EFF-005 wave)."
-                    + " Regenerate deliberately with this build: candor <target> --json " + path);
+                    + " Regenerate deliberately with this build: candor <target> --no-baseline --json " + path);
             System.exit(2);
         }
         // ⟨0.40⟩ SPEC §3 baseline guard — A FUNCTION ABSENT FROM THE BASELINE IS COMPARED AGAINST ∅. For
@@ -179,7 +179,7 @@ final class Policy {
         if (cgl.partial()) {
             System.err.println("candor-java: the baseline call-graph sidecar beside " + path + " is corrupt/"
                     + "unreadable — failing (exit 2); a broken sidecar must not silently decide which functions "
-                    + "the baseline knew. Regenerate the baseline: candor <target> --json " + path);
+                    + "the baseline knew. Regenerate the baseline: candor <target> --no-baseline --json " + path);
             System.exit(2);
         }
         Set<String> baseCgNodes = new HashSet<>();
@@ -198,7 +198,7 @@ final class Policy {
         }
         String runReport = runReportPath == null || runReportPath.equals("-") ? "<this run's --json report>" : runReportPath;
         String remedy = "review it: candor diff " + runReport + " " + path
-                + " — then, if intended, re-record the baseline: candor <target> --json " + path;
+                + " — then, if intended, re-record the baseline: candor <target> --no-baseline --json " + path;
         int v = 0;
         // ⟨0.16⟩ Functions whose ONLY gain vs the baseline is `Unknown` — the §4 trust marker,
         // NOT an effect (`pure` policies already exclude it). On real dependency bumps an Unknown-only

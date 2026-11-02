@@ -162,6 +162,65 @@ PY
 g="$(CANDOR_BASELINE="$W/base.json" "$CJ" "$W/cls" 2>&1)"
 want "AS-EFF-005 flags reads gaining Fs"      "$g" '[AS-EFF-005] `Fx.reads`'
 
+echo "== baseline remedies: every command a refusal prints must RUN and SUCCEED (uFlexi field report) =="
+# The remedy text used to say `candor <target> --json <baseline>`. With the baseline wired by CANDOR_BASELINE or
+# .candor/config that command was REFUSED (--json names the guard's own input), and pointing --json elsewhere
+# still exited 2 against a stale baseline. So: provoke each remedy-bearing refusal, EXTRACT the command it
+# prints (`candor <target> ... --json <path>`), run it, require exit 0 and a following gate that passes.
+runremedy() {  # $1 label  $2 stderr text  $3.. env assignments for the remedy run
+  local label="$1" txt="$2"; shift 2
+  local cmd; cmd="$(grep -oE 'candor <target> [^"]*--json [^ )]+\.json' <<<"$txt" | head -1)"
+  if [ -z "$cmd" ]; then echo "  FAIL $label — no remedy command found in: $txt"; fail=$((fail+1)); return; fi
+  local args="${cmd#candor <target> }"
+  # shellcheck disable=SC2086
+  env "$@" "$CJ" "$W/cls" $args >/dev/null 2>"$W/rem.err"; local rc=$?
+  want "$label: printed remedy [$cmd] runs → exit 0" "$rc" '0'
+  env "$@" "$CJ" "$W/cls" >/dev/null 2>"$W/rem2.err"; rc=$?
+  want "$label: …and the guard is then green" "$rc" '0'
+}
+RB="$W/remedy_base.json"
+# (1) stale producing build
+python3 - "$W/r.json" "$RB" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); d['candor']['version']='deadbee'; json.dump(d,open(sys.argv[2],'w'))
+PY
+cp "$W/r.json" "${RB%.json}.callgraph.json" 2>/dev/null || true
+e1="$(CANDOR_BASELINE="$RB" "$CJ" "$W/cls" 2>&1 >/dev/null)"
+runremedy "stale baseline" "$e1" CANDOR_BASELINE="$RB"
+# (2) versionless baseline
+printf '[{"fn":"Fx.reads","inferred":["Fs"]}]\n' > "$RB"
+e2="$(CANDOR_BASELINE="$RB" "$CJ" "$W/cls" 2>&1 >/dev/null)"
+runremedy "versionless baseline" "$e2" CANDOR_BASELINE="$RB"
+# (3) unparseable baseline
+printf '{ not json' > "$RB"
+e3="$(CANDOR_BASELINE="$RB" "$CJ" "$W/cls" 2>&1 >/dev/null)"
+runremedy "unparseable baseline" "$e3" CANDOR_BASELINE="$RB"
+# (4) absent baseline (note, exit 0) and absent-but-declared-in-config (exit 2)
+rm -f "$RB" "${RB%.json}".*.json
+e4="$(CANDOR_BASELINE="$RB" "$CJ" "$W/cls" 2>&1 >/dev/null)"
+runremedy "absent baseline (env)" "$e4" CANDOR_BASELINE="$RB"
+rm -f "$RB" "${RB%.json}".*.json
+mkdir -p "$W/cfgproj/.candor"; cp -r "$W/cls" "$W/cfgproj/cls"
+printf 'baseline .candor/baseline.json\n' > "$W/cfgproj/.candor/config"
+e5="$("$CJ" "$W/cfgproj/cls" 2>&1 >/dev/null)"
+cmd5="$(grep -oE 'candor <target> [^"]*--json [^ )]+baseline\.json' <<<"$e5" | head -1)"
+want "config-declared absent baseline: remedy printed" "$cmd5" '--no-baseline --json'
+"$CJ" "$W/cfgproj/cls" ${cmd5#candor <target> } >/dev/null 2>&1; rc=$?
+want "config-declared absent baseline: printed remedy runs → exit 0" "$rc" '0'
+"$CJ" "$W/cfgproj/cls" >/dev/null 2>&1; rc=$?
+want "config-declared: …and the guard is then green" "$rc" '0'
+# (5) AS-EFF-005 gain: the remedy is `candor diff <run report> <baseline>` THEN the re-record
+printf '' > /dev/null
+g5="$(CANDOR_BASELINE="$W/base.json" "$CJ" "$W/cls" --json "$W/gainrun.json" 2>&1 >/dev/null)"
+dcmd="$(grep -oE 'candor diff [^ ]+ [^ ]+\.json' <<<"$g5" | head -1)"
+want "AS-EFF-005 remedy names a diff command" "$dcmd" "candor diff $W/gainrun.json $W/base.json"
+"$CJ" ${dcmd#candor } >/dev/null 2>&1; rc=$?
+want "AS-EFF-005: printed diff command runs (exit 0 or 1, not a usage error)" "$([ $rc -le 1 ] && echo ok)" 'ok'
+runremedy "AS-EFF-005 gain" "$g5" CANDOR_BASELINE="$W/base.json"
+# (6) --no-baseline with no --json is a usage error, not a silent gateless run
+"$CJ" "$W/cls" --no-baseline >/dev/null 2>"$W/nb.err"; rc=$?
+want "--no-baseline without --json → exit 2" "$rc" '2'
+
 echo "== cross-jar inheritance (CANDOR_DEPS) =="
 mkdir -p "$W/app"
 echo 'public class App { public void run() { Fx.reads(); } }' > "$W/app/App.java"

@@ -11,7 +11,7 @@
 
 Committed **before any batch-3 trial runs** (see git history). Batch 1 was a synthetic floor (1.16×);
 batch 2 (jsoup, 306 classes) lifted it to ~14× wall-clock / ~21× tool-calls. Batch 3 runs the same
-protocol on **batch 3** — a real, in-production Spring/Struts JVM application (the project's own
+protocol on **batch 3** — a large production Java web application (the project's own
 dogfood), the largest and most realistic target.
 
 ## Target
@@ -24,7 +24,7 @@ Question function: **a single-signature `public static` utility method** (2-arg)
 signature `public static`** utility (no overload to conflate; concrete dispatch, so candor's caller
 set is not subject to the CHA over-approximation that complicated the jsoup batch). candor computes
 **42 transitive callers** (41 distinct `Class.method`; `batch3_truth.txt` / `batch3_truth_norm.txt`)
-spread across the `actions.*` Struts layer. Tracing that by hand means searching ~1,900 source files;
+spread across the app's web-action layer. Tracing that by hand means searching ~1,900 source files;
 one candor query returns it.
 
 ## Arms, metrics, sample size — identical to batch 2

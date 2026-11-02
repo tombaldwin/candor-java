@@ -162,7 +162,7 @@ PY
 g="$(CANDOR_BASELINE="$W/base.json" "$CJ" "$W/cls" 2>&1)"
 want "AS-EFF-005 flags reads gaining Fs"      "$g" '[AS-EFF-005] `Fx.reads`'
 
-echo "== baseline remedies: every command a refusal prints must RUN and SUCCEED (uFlexi field report) =="
+echo "== baseline remedies: every command a refusal prints must RUN and SUCCEED (field report) =="
 # The remedy text used to say `candor <target> --json <baseline>`. With the baseline wired by CANDOR_BASELINE or
 # .candor/config that command was REFUSED (--json names the guard's own input), and pointing --json elsewhere
 # still exited 2 against a stale baseline. So: provoke each remedy-bearing refusal, EXTRACT the command it

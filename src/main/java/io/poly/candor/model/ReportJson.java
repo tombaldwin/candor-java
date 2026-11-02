@@ -24,7 +24,7 @@ public final class ReportJson {
     private ReportJson() {}
 
     // disableHtmlEscaping: Gson's default escapes `<`/`>` as \u003c/\u003e, so every `<init>`/`<clinit>` in a
-    // committed baseline read as Unicode to reviewers (uflexi field report, 2026-10-06). The JSON is equal either
+    // committed baseline read as Unicode to reviewers (field report, 2026-10-06). The JSON is equal either
     // way — every consumer parses it — so this changes bytes, never a verdict.
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
 

@@ -9,8 +9,8 @@ import org.junit.jupiter.api.Test;
 
 /**
  * A JVM unit name carries `<init>` / `<clinit>`. Gson's default HTML-safe escaping wrote them as
- * {@code <init>}, so a committed baseline (636 of each, in uflexi's) read as Unicode to every
- * reviewer of a baseline diff (uflexi field report, 2026-10-06). The JSON value is identical either way;
+ * {@code <init>}, so a committed baseline (636 of each, in the field case's) read as Unicode to every
+ * reviewer of a baseline diff (field report, 2026-10-06). The JSON value is identical either way;
  * what this pins is the BYTES a person reads. Both serializers that write reports and query output.
  */
 class JsonHtmlEscapingTest {

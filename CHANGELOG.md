@@ -1129,7 +1129,7 @@ one. Pinned by `NewFunctionBaselineTest` (PART 15d n1–n4 + 15b `absent`).
 
 Gson's default HTML-safe escaping wrote every `<init>` / `<clinit>` in a report, its `.callgraph.json`
 sidecar and `--json` query output as `\u003cinit\u003e`, which made committed baselines read as if they
-held Unicode (a uflexi field report: 636 of each in one baseline). Both serializers now disable it. **The
+held Unicode (a field report: 636 of each in one baseline). Both serializers now disable it. **The
 parsed JSON is identical, so no gate, guard or ratchet verdict changes** — but the BYTES do: a baseline
 regenerated with this build differs line-for-line from one written before it. Regenerate once, in its own
 PR. Pinned by `JsonHtmlEscapingTest`.

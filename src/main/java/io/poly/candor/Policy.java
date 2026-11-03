@@ -1892,6 +1892,10 @@ final class Policy {
                 : "policy file " + path + " could not be read — REFUSING, the policy is NOT evaluated";
     }
 
+    /** ⟨0.41⟩ Policy TEXT the {@code accepts} verb gates without a file: a path key (never created on disk) to the
+     *  lines {@link #readPolicyLines} returns for it. Empty on every other route, so nothing else reads differently. */
+    static final Map<String, List<String>> virtualPolicies = new HashMap<>();
+
     /**
      * ⟨0.40⟩ SOUNDNESS R1224 — THE POLICY FILE'S LINES, with a U+FEFF at BYTE OFFSET 0 removed before the split
      * (SPEC §6.2, the owner's ruling of 2026-10-20). That one character is an encoding mark written by an
@@ -1906,7 +1910,8 @@ final class Policy {
      * so the {@code unevaluated} rows quote the same line the parser judged.
      */
     static List<String> readPolicyLines(String path) throws IOException {
-        List<String> lines = new ArrayList<>(Files.readAllLines(Path.of(path)));
+        List<String> v = virtualPolicies.get(path);   // ⟨0.41⟩ `accepts` gates PROPOSED text that exists in no file
+        List<String> lines = v != null ? new ArrayList<>(v) : new ArrayList<>(Files.readAllLines(Path.of(path)));
         if (!lines.isEmpty() && !lines.get(0).isEmpty() && lines.get(0).charAt(0) == '\uFEFF')
             lines.set(0, lines.get(0).substring(1));
         return lines;

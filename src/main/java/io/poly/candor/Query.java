@@ -26,7 +26,8 @@ public final class Query {
     static final Set<String> COMMANDS =
             Set.of("show", "where", "callers", "map", "diff", "containment", "reachable", "path", "impact",
                     "blindspots", "tour", "gains", "whatif", "fix", "fix-gate", "unverified", "rewire",
-                    "gate");   // ⟨0.24⟩ SPEC §3.1 — apply a policy to an EXISTING report, with no scan
+                    "gate",   // ⟨0.24⟩ SPEC §3.1 — apply a policy to an EXISTING report, with no scan
+                    "accepts");   // ⟨0.41⟩ SPEC §6.2 — refresh or adopt `accept` lines as a PROPOSED policy (writes no file)
     static final Gson JSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
 
     // Boundary effects SHOULD live in a dedicated layer — their dispersion is the architecture signal
@@ -391,9 +392,53 @@ public final class Query {
         return t.startsWith("-") && !t.equals("-");
     }
 
+    static final String ACCEPTS_USAGE = "candor accepts [--report <locator>] [--policy <file>] [--json] [--adopt --because <reason>]";
+
     static int run(String[] args) {
         String cmd = args[0];
         boolean json = false;
+        // ⟨0.41⟩ SPEC §6.2 `accepts`: its flags are validated FIRST, before any report is resolved or sink armed — a usage error
+        // costs nothing and writes nothing. `--strict` and every flag outside its own grammar are the §3.3.1 exit-2 usage error.
+        boolean adopt = false;
+        String because = null;
+        if (cmd.equals("accepts")) {
+            boolean hasBecause = false;
+            String rawBecause = null;
+            for (int i = 1; i < args.length; i++) {
+                switch (args[i]) {
+                    case "--json" -> json = true;
+                    case "--adopt" -> adopt = true;
+                    case "--report", "--policy", "--because" -> {
+                        if (i + 1 >= args.length || (flagShaped(args[i + 1]) && !args[i].equals("--because"))) {
+                            System.err.println("candor accepts: " + args[i] + " was given no value (usage: " + ACCEPTS_USAGE + ")");
+                            return 2;
+                        }
+                        if (args[i].equals("--because")) { hasBecause = true; rawBecause = args[i + 1]; }
+                        i++;
+                    }
+                    default -> {
+                        System.err.println("candor accepts: " + (args[i].startsWith("-") ? "unknown flag " : "unexpected argument ") + args[i]
+                                + " (usage: " + ACCEPTS_USAGE + ")" + (args[i].equals("--strict")
+                                ? " — `accepts` is advisory and has no --strict: it exits 0 whatever it found; the gate is the CI check." : ""));
+                        return 2;
+                    }
+                }
+            }
+            if (hasBecause && !adopt) {
+                System.err.println("candor accepts: --because is only meaningful with --adopt — a refresh never writes an accept line for a "
+                        + "row no entry names, so a reason would have nothing to attach to (usage: " + ACCEPTS_USAGE + ")");
+                return 2;
+            }
+            if (adopt && !hasBecause) {
+                System.err.println("candor accepts: --adopt needs --because <reason> — the reason on a created line is yours to write, "
+                        + "never one the engine composes (usage: " + ACCEPTS_USAGE + ")");
+                return 2;
+            }
+            if (adopt) {
+                because = Accepts.reason(rawBecause);
+                if (because == null) return 2;
+            }
+        }
         boolean includeUnknown = false; // `callers --include-unknown`: also disclose the unresolved-dispatch frontier
         boolean strict = false;         // `unverified --strict`: exit 1 on an unverified-purity hole
         boolean stats = false;          // `blindspots --stats`: the reason-class distribution, not the source list
@@ -563,6 +608,12 @@ public final class Query {
                     if (flagShaped(args[i + 1])) { System.err.println("candor: --policy was given no value — the next token " + args[i + 1] + " is a flag, not a <file> (a file really named that is spelled ./" + args[i + 1] + ")"); return 2; }
                     policyFlag = args[++i];
                 }
+                case "--adopt" -> { /* `accepts` only; validated and read above (any other verb: below) */
+                    if (!cmd.equals("accepts")) { Candor.rejectUnknownFlag(args[i], known, usage); pos.add(args[i]); } }
+                case "--because" -> {
+                    if (!cmd.equals("accepts")) { Candor.rejectUnknownFlag(args[i], known, usage); pos.add(args[i]); }
+                    else i++;
+                }
                 case "--gate-json" -> {
                     // Same dash-check as main()'s: a valueless OR flag-shaped value FAILS (exit 2), so
                     // `--gate-json --policy p` cannot swallow `--policy` and run gateless-green. `-` = stdout.
@@ -657,7 +708,7 @@ public final class Query {
                 return 2;
             }
             report = reportSet.get(0);
-            if (!cmd.equals("gate") && reportSet.size() > 1)
+            if (!cmd.equals("gate") && !cmd.equals("accepts") && reportSet.size() > 1)
                 System.err.println("candor: locator `" + reportLocator + "` names " + reportSet.size()
                         + " reports — answering over all of them as one analysis world (§2): "
                         + String.join(", ", reportSet));
@@ -695,7 +746,7 @@ public final class Query {
         // FILE locator naming one unreadable report fails with the identical message.
         List<Effector> fns = List.of();
         List<String> loaded = List.of();     // the members that loaded — the sidecar consumers' set
-        if (!TWO_REPORT.contains(cmd) && !cmd.equals("gate")) {
+        if (!TWO_REPORT.contains(cmd) && !cmd.equals("gate") && !cmd.equals("accepts")) {
             List<Effector> all = new ArrayList<>();
             List<String> ok = new ArrayList<>();
             List<String[]> failed = new ArrayList<>();
@@ -771,6 +822,7 @@ public final class Query {
             case "unverified" -> unverified(fns, reportLocator, loaded, policyFlag, json, strict, classFilter);
             case "rewire" -> rewire2(a0, a1, json);
             case "gate" -> gate(reportSet, a0, policyFlag, json, gateJsonFlag);
+            case "accepts" -> Accepts.run(reportSet, policyFlag, adopt, because, json);   // ⟨0.41⟩ rejects every positional above
             default -> 2;
         };
     }

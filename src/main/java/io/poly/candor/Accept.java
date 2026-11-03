@@ -75,6 +75,13 @@ final class Accept {
     private static final Map<Integer, List<Object[]>> nestedBy = new HashMap<>();   // {Row nested, Row enclosing}
     private static final List<Row> remaining = new ArrayList<>();
     private static int acceptedRows;
+    /** ⟨0.41⟩ Set only by the {@code accepts} verb: compute {@link #twinNames} even when the policy holds no entry, so
+     *  {@code --adopt} over a policy with no {@code accept} line still refuses a (hash, fn) twin. Never read by a gate. */
+    static boolean forceTwins = false;
+    /** ⟨0.41⟩ The policy lines of the entries {@link #finish} made AS-EFF-012 rows in the last gate — for {@code accepts},
+     *  which deletes exactly those lines and so must not re-derive staleness from the row's message text. */
+    private static Set<Integer> staleLinesLast = new TreeSet<>();
+    static Set<Integer> staleLines() { return new TreeSet<>(staleLinesLast); }
     /** The {@code accepted} verdict list, built by {@link #finish}; null when no entry exists. */
     static List<Map<String, Object>> accepted = null;
 
@@ -227,8 +234,9 @@ final class Accept {
         directBy.clear(); nestedBy.clear(); remaining.clear();
         acceptedRows = 0;
         accepted = null;
+        staleLinesLast = new TreeSet<>();
         twinNames = new HashSet<>();
-        if (entries.isEmpty()) return;
+        if (entries.isEmpty() && !forceTwins) return;
         // (hash, fn) TWINS: two units of this run sharing a name. The scan route gates one analysis world
         // (a name is a unit), the report route keys by hash, so >1 key under a name IS the twin case.
         Map<String, Set<String>> byName = new HashMap<>();
@@ -276,6 +284,16 @@ final class Accept {
         for (Row r : rows) inert.add(new Row(r.ruleKey, r.code, r.name, r.hash, r.effects, r.classes, () -> {}));
         settle(inert);
     }
+
+    /** ⟨0.41⟩ For {@code accepts}: per entry line, the rows that entry accepted DIRECTLY in the last gate (a copy). */
+    static Map<Integer, List<Row>> directSnapshot() {
+        Map<Integer, List<Row>> m = new HashMap<>();
+        for (var e : directBy.entrySet()) m.put(e.getKey(), new ArrayList<>(e.getValue()));
+        return m;
+    }
+
+    /** ⟨0.41⟩ For {@code accepts}: the names two units of the last gate shared (the (hash, fn) twin case). */
+    static Set<String> twinSnapshot() { return new HashSet<>(twinNames); }
 
     /** Names of units a direct or nested acceptance covered in the last {@link #begin}…settle cycle. */
     static Set<String> acceptedNames() {
@@ -383,6 +401,7 @@ final class Accept {
                 continue;
             }
             stale++;
+            staleLinesLast.add(e.line());
             Candor.diagUnit(DiagnosticCode.AS_EFF_012, EffectSet.ofNames(e.effects()).toNames(), List.of(), List.of(), "",
                     STALE_FMT, e.fn(), e.line(), e.raw(), e.ruleKey(), e.line());
         }

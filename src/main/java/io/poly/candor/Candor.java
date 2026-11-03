@@ -1639,6 +1639,14 @@ public class Candor {
         if (Query.COMMANDS.contains(args[0])) {
             System.exit(Query.run(args));
         }
+        // ⟨0.41⟩ SPEC §6.2: `accept` is a policy LINE kind, one letter short of the verb `accepts`. Typed as a verb it would be read
+        // as a scan target and fail somewhere unrelated, or worse run; it is a usage error that names the verb. (A directory really
+        // named `accept` is scanned as ./accept.)
+        if (args[0].equals("accept")) {
+            System.err.println("candor: `accept` is a policy LINE kind (`accept <fn> <effects> for <rule> because <reason>`), not a verb. "
+                    + "The verb that refreshes or adopts those lines is `accepts`: " + Query.ACCEPTS_USAGE);
+            System.exit(2);
+        }
         // The agent contract for THE INSTALLED BUILD, baked into the jar as a resource — doc and
         // engine cannot drift (the §2.1 version-trust rule applied to documentation).
         //

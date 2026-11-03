@@ -303,6 +303,12 @@ final class Accepts {
                                 for (String x : r.effects()) { if (x.equals("Unknown")) unk = true; else conc.add(x); }
                                 cls.addAll(r.classes());
                             }
+                    if (unk && cls.isEmpty()) {
+                        // SPEC §6.2 ⟨0.41⟩: no class to name, so no line could cover the row — keep the line, propose nothing.
+                        System.err.println("candor accepts: line " + L + " (`" + e.fn() + "`) is EXCEEDED by an `Unknown` whose reason classes "
+                                + "this report does not carry — no wider line can be written for it; kept as is, and the row stays red.");
+                        continue;
+                    }
                     List<String> prop = canon(conc, unk ? cls : null);
                     TreeSet<String> have = new TreeSet<>(e.effects()); have.remove("Unknown");
                     List<String> adds = new ArrayList<>();

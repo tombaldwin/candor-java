@@ -1147,14 +1147,22 @@ final class Policy {
      *  gate's own rows (collected, never emitted) pushed through {@link Accept#settle} in dry mode. For the advisory
      *  verbs, which must not describe such a unit as clean (§6.2). Empty when the policy has no entry. */
     static Set<String> acceptedUnits(GateInput gi, Set<String> unanswerable) {
-        if (!Accept.any()) return Set.of();
+        return reviewAccepts(gi, unanswerable).names();
+    }
+
+    /** ⟨0.41⟩ What the advisory verbs need from the `accept` lines: the accepted unit names and the stale entries
+     *  ({fn, AS-EFF-012 message}), from ONE dry settle of the gate's own rows. */
+    record AcceptReview(Set<String> names, List<String[]> stale) {}
+
+    static AcceptReview reviewAccepts(GateInput gi, Set<String> unanswerable) {
+        if (!Accept.any()) return new AcceptReview(Set.of(), List.of());
         Accept.begin(gi);
         List<Accept.Row> r6 = new ArrayList<>(), r9 = new ArrayList<>();
         collectDenyRows(gi, unanswerable, new ArrayList<>(), r6);
         collectForbidRows(gi, r9);
         Accept.settleDry(r6);
         Accept.settleDry(r9);
-        return Accept.acceptedNames();
+        return new AcceptReview(Accept.acceptedNames(), Accept.staleDry());
     }
 
     /** ⟨0.41⟩ The reason-class TOKENS a row's `Unknown` is judged against — the same transitive set the row's

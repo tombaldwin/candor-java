@@ -2913,8 +2913,9 @@ public class Candor {
         if (!ignored.isEmpty()) out.put("ignored", ignored);
         // ⟨0.41⟩ SPEC §6.2 `accepted` — the rows a policy `accept` line took out of `violations`. A VERDICT key:
         // omitted when no `accept` line became an entry (a policy without the directive keeps a byte-identical
-        // verdict) and from every exit-2 document, which makes no claim about violations.
-        if (Accept.accepted != null && !incomplete) out.put("accepted", Accept.accepted);
+        // verdict) and from an exit-2 incomplete document, which makes no claim about violations; an incomplete run that
+        // still holds a violation is exit 1 and a verdict, so it carries the key (§6.2 follow-up, PART 105 r33).
+        if (Accept.accepted != null && !(incomplete && gateViolations.isEmpty())) out.put("accepted", Accept.accepted);
         // ⟨0.21⟩ (Gap 2) the machine-legible incompleteness: the units candor couldn't analyze, so a CI/agent
         // reading the JSON learns WHY the gate can't certify — the stderr warning alone used to hide this from
         // a machine. `incomplete:true` + the list; the caller exits 2 (could-not-fully-evaluate). Tom's call

@@ -3164,12 +3164,27 @@ public final class Query {
         // read rather than about the policy, and `false` would assert a crossing beside an empty `remedies`
         // that nobody found. {@link #advisoryAnswer} withholds the field; `clean` survives only to rank the
         // exit below, where "did I find a crossing" is still a question this run answered.
-        boolean clean = plans.isEmpty() && unevaluated.isEmpty();
+        // ⟨0.41⟩ SPEC §6.2: a STALE `accept` entry is a finding the gate exits 1 on, so `fix-gate` (never more certain
+        // than the gate, §3.3.1) must not lose it: `staleAccepts`, `ok: false`, and `--strict` exits 1. The stale rows
+        // come from the gate's own rows (Policy#reviewAccepts), never a second match.
+        Accept.setUnevaluated(unevaluated);
+        List<String[]> staleAccepts = Policy.reviewAccepts(gi, scoped.triples()).stale();
+        boolean clean = plans.isEmpty() && unevaluated.isEmpty() && staleAccepts.isEmpty();
         if (json) {
             Map<String, Object> body = new LinkedHashMap<>();
             List<Map<String, Object>> rem = new ArrayList<>();
             for (Remedy p : plans.values()) rem.add(p.toJson());
             body.put("remedies", rem);
+            if (!staleAccepts.isEmpty()) {
+                List<Map<String, Object>> st = new ArrayList<>();
+                for (String[] a : staleAccepts) {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("fn", a[0]);
+                    m.put("detail", a[1]);
+                    st.add(m);
+                }
+                body.put("staleAccepts", st);
+            }
             emit(advisoryAnswer(clean, comp, unevaluated, body));
             // Advisory by default (exit 0 — the agent fix-loop reads the remedy and edits); `--strict` makes
             // the exit follow `ok`, so CI can REQUIRE zero outstanding crossings (mirrors `unverified --strict`).
@@ -3183,12 +3198,19 @@ public final class Query {
             // of having got further than the gate. count-0 (judgedNothing) stays OUT of this condition:
             // the gate exits 0 there, and ⟨0.24⟩ pinned it "a disclosure, not an exit code".
             if (strict && (!unevaluated.isEmpty() || comp.incomplete())) return 2;
-            return strict && !plans.isEmpty() ? 1 : 0;
+            return strict && (!plans.isEmpty() || !staleAccepts.isEmpty()) ? 1 : 0;
         }
         for (String[] u : unevaluated) System.err.println("candor fix-gate: " + u[1]);
+        for (String[] a : staleAccepts) System.err.println("candor fix-gate: " + a[1]);
         advisoryIncompleteNote("fix-gate", unanalyzed, INCOMPLETE_TAIL_STRICT);
         advisoryJudgedNothingNote("fix-gate", comp);
         if (plans.isEmpty()) {
+            if (unevaluated.isEmpty() && !comp.mustHedge() && !staleAccepts.isEmpty()) {
+                System.out.println("candor fix-gate: no boundary crossings — but " + staleAccepts.size()
+                        + " STALE `accept` entr" + (staleAccepts.size() == 1 ? "y" : "ies") + " (above): the gate exits 1 on "
+                        + "this run, so NOT an all-clear. Delete the stale line(s).");
+                return strict ? 1 : 0;
+            }
             if (unevaluated.isEmpty() && !comp.mustHedge()) {
                 System.out.println("candor fix-gate: no deny/pure boundary crossings in this report ✓");
                 return 0;
@@ -3429,7 +3451,17 @@ public final class Query {
             }
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("unverified", items);
-            emit(advisoryAnswer(clean, comp, unevaluated, body));
+            Map<String, Object> answer = advisoryAnswer(clean, comp, unevaluated, body);
+            if (!acceptedUnits.isEmpty()) {
+                // ⟨0.41⟩ SPEC §6.2: `ok` is OMITTED over an accepted violation (`true` would describe the layer as
+                // clean, `false` would assert an Unknown hole beside a list that names none), and `accepted` names
+                // the units, sorted by code point.
+                answer.remove("ok");
+                List<String> names = new ArrayList<>(acceptedUnits);
+                names.sort(BY_CODE_POINT);
+                answer.put("accepted", names);
+            }
+            emit(answer);
             // ⟨0.24⟩ 2, not 1, when the gate would have refused OR the report is incomplete — SPEC §3.2
             // pins the exit to the gate's, and could-not-fully-evaluate outranks found-a-hole.
             // ⟨0.28⟩ #79: `comp.incomplete()`, not `unanalyzed` alone — an UNREADABLE set member is the

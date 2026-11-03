@@ -384,9 +384,7 @@ final class Accept {
             }
             stale++;
             Candor.diagUnit(DiagnosticCode.AS_EFF_012, EffectSet.ofNames(e.effects()).toNames(), List.of(), List.of(), "",
-                    "`%s` has a STALE acceptance — policy line %d (`%s`) matched no violation of `%s`. "
-                            + "Delete line %d: left in place it would accept whatever a later edit puts under that key",
-                    e.fn(), e.line(), e.raw(), e.ruleKey(), e.line());
+                    STALE_FMT, e.fn(), e.line(), e.raw(), e.ruleKey(), e.line());
         }
         items.sort((a, b) -> {
             int c = Integer.compare((int) a.get("line"), (int) b.get("line"));
@@ -397,6 +395,26 @@ final class Accept {
         });
         accepted = items;
         return stale;
+    }
+
+    private static final String STALE_FMT = "`%s` has a STALE acceptance — policy line %d (`%s`) matched no violation of `%s`. "
+            + "Delete line %d: left in place it would accept whatever a later edit puts under that key";
+
+    /** ⟨0.41⟩ The STALE entries of the last {@link #begin}…{@link #settleDry} cycle, as {fn, AS-EFF-012 message} pairs in
+     *  policy order — for the advisory verbs, which must not lose a finding the gate exits 1 on (§6.2: {@code fix-gate}
+     *  carries them as {@code staleAccepts}). The SAME classification as {@link #finish}: an entry is stale unless it was
+     *  unjudged, ambiguous, matched a row, or is exceeded by a remaining row of its rule and fn. */
+    static List<String[]> staleDry() {
+        List<String[]> out = new ArrayList<>();
+        for (Entry e : entries) {
+            if (unevaluated.contains(e.ruleKey()) || twinNames.contains(e.fn())) continue;
+            if (!directBy.getOrDefault(e.line(), List.of()).isEmpty()) continue;
+            boolean over = false;
+            for (Row r : remaining) if (r.ruleKey.equals(e.ruleKey()) && r.name.equals(e.fn())) { over = true; break; }
+            if (over) continue;
+            out.add(new String[]{e.fn(), String.format(STALE_FMT, e.fn(), e.line(), e.raw(), e.ruleKey(), e.line())});
+        }
+        return out;
     }
 
     private static Map<String, Object> item(Entry e, String code, String fn, String hash,

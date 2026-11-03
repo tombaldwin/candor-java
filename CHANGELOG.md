@@ -9,6 +9,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **`accept` follow-ups (SPEC §6.2 ⟨0.41⟩, PART 105 r33/r34/r34b).** `accepted` is carried on an exit-1 verdict that is also incomplete (only an exit-2 document omits it). `unverified` over an accepted violation carries `accepted: [fn…]` and omits `ok` instead of asserting `ok: false`. `fix-gate` carries a stale entry as `staleAccepts`, `ok: false`, and `--strict` exits 1.
+
 - **`accept` lines for KNOWN policy violations (SPEC §6.2 ⟨0.41⟩, reference engine; the declared `spec` stays
   ⟨0.40⟩ until the family floor moves).** `accept <fn> <Effect>… for <rule tokens> because <reason>` takes ONE
   named row out of `violations` and lists it in a new `accepted` verdict key (statuses `accepted`, `exceeded`,

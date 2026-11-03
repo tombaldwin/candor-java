@@ -3716,5 +3716,33 @@ else
   fail=$((fail+1))
 fi
 
+# ⟨0.41⟩ SPEC §6.2 `accepts` — the verb that prints a PROPOSED policy. It can only accept LESS: stale lines go, an over-wide entry
+# narrows, an exceeded one is proposed in a COMMENT, and only --adopt --because writes a line for a row no entry names. Hand-written
+# report (the verb is a report-route query); PART 106 is the cross-engine suite, this is the in-repo pin.
+AR="$W/acc.json"; AP="$W/acc.pol"; mkdir -p "$W/acc-cwd"
+cat > "$AR" <<'JSON'
+{"candor":{"version":"handwritten","spec":"0.40"},"package":"dao","analyzed":{"count":2,"digest":"0"},
+ "functions":[{"fn":"dao.a","hash":"ha","inferred":["Fs"],"direct":["Fs"]},
+              {"fn":"dao.b","hash":"hb","inferred":["Fs","Rand"],"direct":["Fs","Rand"]}]}
+JSON
+printf 'deny Fs Rand dao\naccept dao.a Fs Rand for deny Fs Rand dao because known\naccept dao.gone Fs for deny Fs Rand dao because old\naccept dao.b Fs for deny Fs Rand dao because x\n' > "$AP"
+AP_BEFORE="$(cksum < "$AP")"
+ACC="$(cd "$W/acc-cwd" && "$CJ" accepts --report "$AR" --policy "$AP" 2>/dev/null)"
+want    "accepts narrows an over-wide entry to its row"        "$ACC" 'accept dao.a Fs for deny Fs Rand dao because known'
+wantnot "accepts deletes the stale line"                       "$ACC" 'dao.gone'
+want    "accepts PROPOSES the exceeded entry in a comment"      "$ACC" '# candor-accepts: exceeded (adds Rand) — REPLACE the line above with: accept dao.b Fs Rand for deny Fs Rand dao because x'
+want    "accepts keeps the exceeded line itself as written"     "$ACC" 'accept dao.b Fs for deny Fs Rand dao because x'
+[ "$AP_BEFORE" = "$(cksum < "$AP")" ] && { echo "  ok   accepts leaves the policy file untouched"; pass=$((pass+1)); } || { echo "  FAIL accepts changed the policy file"; fail=$((fail+1)); }
+[ -z "$(ls -A "$W/acc-cwd")" ] && { echo "  ok   accepts writes nothing into its working directory"; pass=$((pass+1)); } || { echo "  FAIL accepts wrote a file into the cwd"; fail=$((fail+1)); }
+printf 'deny Fs dao\n' > "$W/acc2.pol"
+want    "accepts --adopt writes the operator's reason"          "$("$CJ" accepts --report "$AR" --policy "$W/acc2.pol" --adopt --because 'pre-existing  at adoption' 2>/dev/null)" 'accept dao.a Fs for deny Fs dao because pre-existing at adoption'
+wantnot "accepts without --adopt writes no line for a new row"  "$("$CJ" accepts --report "$AR" --policy "$W/acc2.pol" 2>/dev/null)" 'accept dao.a'
+"$CJ" accepts --report "$AR" --policy "$W/acc2.pol" --because x >/dev/null 2>&1; want "accepts --because without --adopt is a usage error" "exit $?" 'exit 2'
+"$CJ" accepts --report "$AR" --policy "$W/acc2.pol" --adopt >/dev/null 2>&1; want "accepts --adopt without --because is a usage error" "exit $?" 'exit 2'
+"$CJ" accepts --report "$AR" --policy "$W/acc2.pol" --strict >/dev/null 2>&1; want "accepts --strict is a usage error" "exit $?" 'exit 2'
+want    "accept as a verb names accepts"                        "$("$CJ" accept 2>&1)" 'accepts'
+: > "$W/acc3.pol"
+want    "an empty policy names the redirect trap"               "$("$CJ" accepts --report "$AR" --policy "$W/acc3.pol" 2>&1)" 'redirect'
+
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

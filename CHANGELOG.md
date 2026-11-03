@@ -9,6 +9,16 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **`accepts` — refresh or adopt `accept` lines as a PROPOSED policy (SPEC §6.2 ⟨0.41⟩, PART 106).**
+  `candor accepts [--report <locator>] [--policy <file>] [--json] [--adopt --because <reason>]` prints the policy with
+  stale `accept` lines deleted, over-wide accepted entries narrowed to the rows they accepted, an `exceeded` entry left
+  as written with a `# candor-accepts: exceeded (adds …) — REPLACE the line above with: …` comment, and — only under
+  `--adopt --because` — one appended line per violation no entry names, carrying YOUR reason. It writes no file (stdout,
+  or the plan with `--json`; summary on stderr) and can only accept less: every fact comes from this engine's own gate
+  over the same bytes, and the proposal is gated again to report `after`. An incomplete analysis, a refusal or an empty
+  policy is exit 2 with no proposal (the empty-policy message names the shell-redirect trap). `--strict`, any other flag,
+  and `accept` written as a verb are exit-2 usage errors; the last names `accepts`. No existing verb's output changes.
+
 - **`accept` follow-ups (SPEC §6.2 ⟨0.41⟩, PART 105 r33/r34/r34b).** `accepted` is carried on an exit-1 verdict that is also incomplete (only an exit-2 document omits it). `unverified` over an accepted violation carries `accepted: [fn…]` and omits `ok` instead of asserting `ok: false`. `fix-gate` carries a stale entry as `staleAccepts`, `ok: false`, and `--strict` exits 1.
 
 - **`accept` lines for KNOWN policy violations (SPEC §6.2 ⟨0.41⟩, reference engine; the declared `spec` stays

@@ -2912,6 +2912,7 @@ hp="$("$CJ" --help 2>&1)"; hprc=$?
 want "--help shows usage"                          "$hp" 'USAGE'
 want "--help shows the scan form"                  "$hp" 'candor <classes-or-jar>'
 want "--help names the gate flag"                  "$hp" '--gate-json'
+want "--help lists the accepts verb (SPEC §6.2 ⟨0.41⟩)" "$hp" "unverified  accepts"
 wantnot "--help leaves the spec disclosure to --version" "$hp" 'candor-spec'
 if [ "$hprc" -eq 0 ]; then echo "  ok   --help exits 0"; pass=$((pass+1));
 else echo "  FAIL --help exit $hprc (want 0)"; fail=$((fail+1)); fi

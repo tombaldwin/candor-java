@@ -9,6 +9,9 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **`--help` lists `accepts`** (in the verb block and under ALL ACTIONS). The verb existed but the help, which conformance PART 43 derives
+  its verb matrix from, did not name it (SPEC §3.3: `--help` MUST list what the binary accepts).
+
 - **`accepts` proposes nothing for an `exceeded` entry whose `Unknown` row carries no reason class (SPEC §6.2 ⟨0.41⟩, PART 106 q33).**
   It used to write the comment `exceeded (adds )` and the replacement line `Unknown[]`, which the gate does not honour (a
   second red run). The line is kept as it is and stderr says the row's classes are not carried.

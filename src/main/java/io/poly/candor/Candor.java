@@ -1696,10 +1696,15 @@ public class Candor {
                                                 same verdict shape as `candor <classes> --policy <file>`;
                                                 the only difference is that the effect set is READ from
                                                 the report rather than recomputed from bytecode.
+                      accepts [--policy <file>] [--adopt --because <reason>]
+                                                print a PROPOSED policy: stale `accept` lines deleted,
+                                                over-wide ones narrowed, exceeded ones proposed in a
+                                                comment (writes no file; --adopt adds lines for
+                                                violations the policy does not name yet)
 
                     ALL ACTIONS
                       show  where  callers  map  containment  diff  reachable  impact  blindspots
-                      gains  path  tour  whatif  fix  fix-gate  unverified  rewire  gate  parsepolicy
+                      gains  path  tour  whatif  fix  fix-gate  unverified  accepts  rewire  gate  parsepolicy
 
                     OPTIONS  (uniform across every engine)
                       --report <locator>        use this report instead of discovering .candor/

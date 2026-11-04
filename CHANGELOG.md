@@ -15,7 +15,7 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   line for `iterator`, `listIterator`, `subList`, `spliterator`, `keySet`, `values` and their siblings, and the iterating
   function read pure over an executed file write. The table now names the hooks of a returned object built over `this`.
   Separately, the argument contract resolved a JDK re-entry SET to its first member only (`it.hasNext()` over a project
-  list whose `size()` writes was charged its pure `get`); it now takes every member. ADDS concrete edges only. Residual:
+  list whose `size()` writes was charged its pure `get`); it now takes every member. ADDS concrete edges only. The function that calls `iterator()`/`values()`/… is charged what the returned view can run (over-approximate in time: iterating `values()` is charged an overridden `clear`). Corpus: 1,727 rows newly concrete, 0 removed. Residual:
   a `java.util`-typed receiver with no caller-visible allocation (a field, a call result) still takes no re-entry —
   the call-target round 2 ruling on CHA over a JDK owner.
 

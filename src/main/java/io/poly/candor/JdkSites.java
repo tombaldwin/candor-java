@@ -39,7 +39,7 @@ final class JdkSites {
 
     /** A hook: {@code slot} THIS or an argument index; {@code elem} = the ELEMENTS of that array argument;
      *  {@code anyAccess} = the member may be private (serialization's reflective hooks). */
-    record Hook(int slot, boolean elem, String name, String desc, boolean anyAccess, Set<String> guards) {
+    record Hook(int slot, boolean elem, String name, String desc, boolean anyAccess, Set<String> guards, boolean view) {
         String member() { return name + desc; }
     }
     record Entry(List<Hook> hooks, boolean open) {}
@@ -72,13 +72,15 @@ final class JdkSites {
                             if (h[0].equals("!")) { open = true; continue; }
                             if (h.length < 2) continue;
                             boolean elem = h[0].endsWith("[]");
-                            int slot = h[0].equals("t") ? THIS : Integer.parseInt(elem ? h[0].substring(0, h[0].length() - 2) : h[0]);
+                            // `v`: a VIEW hook (SOUNDNESS R1462) — run on this by an object the member RETURNS
+                            boolean view = h[0].equals("v");
+                            int slot = h[0].equals("t") || view ? THIS : Integer.parseInt(elem ? h[0].substring(0, h[0].length() - 2) : h[0]);
                             String mem = h[1];
                             boolean any = mem.startsWith("#");
                             if (any) mem = mem.substring(1);
                             int lp = mem.indexOf('(');
                             Set<String> guards = h.length > 2 ? Set.of(h[2].split(",")) : Set.of();
-                            hs.add(new Hook(slot, elem, mem.substring(0, lp), mem.substring(lp), any, guards));
+                            hs.add(new Hook(slot, elem, mem.substring(0, lp), mem.substring(lp), any, guards, view));
                         }
                         m.put(p[0], new Entry(List.copyOf(hs), open));
                     }
@@ -137,7 +139,7 @@ final class JdkSites {
      *  NOT itself declare it: each THIS hook whose guards hold, resolved on {@code t}. */
     static List<String> reentryOnThis(String t, String name, String desc) {
         List<String> out = new ArrayList<>();
-        reentryOnThis(t, jdkContext(t), name, desc, out, new HashSet<>());
+        reentryOnThis(t, jdkContext(t), name, desc, true, out, new HashSet<>());
         if (CallTargets.DEBUG && !out.isEmpty()) System.err.println("CT\tSITE\tthis\t" + t + "." + name + desc + "\t" + out);
         return out;
     }
@@ -145,16 +147,32 @@ final class JdkSites {
     /** A hooked member with no project body runs the JDK's own, which is a line of the table too: follow it on the same
      *  receiver ({@code printStackTrace} hands this to {@code println}, whose {@code toString} is
      *  {@code Throwable.toString}, which runs {@code getMessage}). */
-    private static void reentryOnThis(String t, String x, String name, String desc, List<String> out, Set<String> seen) {
-        if (!seen.add(name + desc)) return;
+    private static void reentryOnThis(String t, String x, String name, String desc, boolean views, List<String> out, Set<String> seen) {
+        if (!seen.add(name + desc + (views ? "+v" : ""))) return;
         Entry e = at(x, name, desc);
         if (e == null) return;
         for (Hook h : e.hooks()) {
             if (h.slot() != THIS || h.elem() || !guardsHold(t, h.guards())) continue;
+            if (h.view() && !views) continue;
             String b = projectBody(t, h.name(), h.desc());
             if (b != null) { if (!out.contains(b)) out.add(b); }
-            else reentryOnThis(t, x, h.name(), h.desc(), out, seen);
+            else reentryOnThis(t, x, h.name(), h.desc(), views && canReturnView(desc), out, seen);
         }
+    }
+
+    /** SOUNDNESS R1462 — whether a JDK body with descriptor {@code desc} can hand an object it acquired from a member of
+     *  {@code this} back to its caller. A view hook ({@code v}) of a member that body calls is run by the view, later;
+     *  where the body returns nothing that can be one (void, a primitive, a String, a box, an array), the table already
+     *  followed exactly what the body does with it ({@code AbstractList.contains} advances the iterator, never
+     *  {@code remove}s through it), so the view's other members are not added. Where it can (`stream()` returns a
+     *  pipeline over the spliterator), they are. */
+    static boolean canReturnView(String desc) {
+        org.objectweb.asm.Type r = org.objectweb.asm.Type.getReturnType(desc);
+        if (r.getSort() != org.objectweb.asm.Type.OBJECT) return false;
+        String n = r.getInternalName();
+        return !(n.equals("java/lang/String") || n.equals("java/lang/Boolean") || n.equals("java/lang/Integer")
+                || n.equals("java/lang/Long") || n.equals("java/lang/Short") || n.equals("java/lang/Byte")
+                || n.equals("java/lang/Character") || n.equals("java/lang/Double") || n.equals("java/lang/Float"));
     }
 
     /** Whether the table's line for {@code t}'s JDK body of {@code name+desc} is CLOSED (complete) — the R1235 licence to

@@ -874,7 +874,9 @@ final class JdkSiteGen {
      *
      *  <p>The hooks of a RETURNED allocation that holds {@code this} (directly, or through a view it returns in turn,
      *  bounded) are hooks of the member: every public member of the view's class is summarised on that allocation and
-     *  each call it makes on the captured {@code this} is a {@code t} hook. That is an over-approximation in TIME — the
+     *  each call it makes on the captured {@code this} is a hook, written with slot {@code v} (a VIEW hook: run by the
+     *  returned object, so it applies where the program calls the member, not where a JDK body calls it internally and
+     *  the summary above already followed what that body does with the object). That is an over-approximation in TIME — the
      *  body that acquires the view is charged what any later use of it can run — never in reach: no hook is named that
      *  some member of the returned object cannot run. A view member that hands a value of its own to user code (an
      *  argument's {@code accept}) or is itself OPEN makes the line OPEN, so the engine only ever ADDS these.
@@ -948,7 +950,7 @@ final class JdkSiteGen {
                         int p = mem.indexOf('(');
                         if (!h.member().startsWith("~") && overridable(declarationFrom(viewOwner, mem.substring(0, p), mem.substring(p)))
                                 && declarationFrom(viewOwner, mem.substring(0, p), mem.substring(p)) != null)
-                            hs.add("t " + mem + (v.guards().isEmpty() ? "" : " " + String.join(",", new TreeSet<>(v.guards()))));
+                            hs.add("v " + mem + (v.guards().isEmpty() ? "" : " " + String.join(",", new TreeSet<>(v.guards()))));
                     } else if (o instanceof View w) {
                         int p = mem.indexOf('(');
                         viewMember(w, mem.substring(0, p), mem.substring(p), hs, open, seen, depth + 1);
@@ -1046,7 +1048,7 @@ final class JdkSiteGen {
         // follow — named here, where the view is the JDK's own (the user did not override keySet/values)
         if ((name.equals("keySet") && desc.equals("()Ljava/util/Set;") || name.equals("values") && desc.equals("()Ljava/util/Collection;"))
                 && "java/util/AbstractMap".equals(resolve(x, name, desc)) && extendable(classes.get(x)))
-            hs.add("t entrySet()Ljava/util/Set;");
+            hs.add("v entrySet()Ljava/util/Set;");
         if (isSub(x, "java/io/PrintStream") && extendable(classes.get(x))
                 && (name.equals("print") || name.equals("println") || name.equals("append") || name.equals("format")
                     || name.equals("printf") || name.equals("write") && desc.startsWith("(Ljava/lang/String;")))

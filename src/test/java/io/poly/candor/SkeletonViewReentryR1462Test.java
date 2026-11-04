@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Test;
  * first hook {@code get}).
  *
  * <p>Executed on JDK 21 (scratchpad javaagent-r1462/fx/shapes, ground-truth-shapes.txt): every positive below wrote its
- * file; {@code ctlNew} and {@code ctlParam} (an exact {@code ArrayList}) did not. No project {@code Iterator} exists in
+ * file; {@code ctlNew} and {@code ctlParam} (an exact {@code ArrayList}) and {@code ctlContains} (fx/ctl) did not. No project {@code Iterator} exists in
  * the tree, so none of this rests on R1461's bounded fan-out at {@code Iterator.next}.
  */
 class SkeletonViewReentryR1462Test {
@@ -56,6 +56,9 @@ class SkeletonViewReentryR1462Test {
                 // controls: an exact JDK list runs none of the project overrides
                 + " public static int ctlNew() { int n = 0; for (String s : new ArrayList<>(List.of(\"a\"))) n++; return n; }\n"
                 + " public static void ctlParam() { foreach(new ArrayList<>(List.of(\"a\"))); }\n"
+                // control: contains/indexOf advance an iterator they build and never remove through it — the view's other
+                // members are not charged where the JDK body consumes the view itself (executed: no file)
+                + " public static boolean ctlContains() { RmList l = new RmList(); return l.contains(\"z\") | l.indexOf(\"z\") > 0; }\n"
                 + "}\n");
         return m;
     }
@@ -68,9 +71,9 @@ class SkeletonViewReentryR1462Test {
             for (String fn : List.of("projParam", "local", "sub", "cForeach", "cHasNext", "cRemove", "cKeys"))
                 assertTrue(inf.getOrDefault("sv.Use." + fn, EffectSet.empty()).contains(Effect.FS),
                         "executed: sv.Use." + fn + " wrote the file through a JDK skeleton's view — got " + inf.get("sv.Use." + fn));
-            for (String fn : List.of("ctlNew", "ctlParam"))
+            for (String fn : List.of("ctlNew", "ctlParam", "ctlContains"))
                 assertFalse(inf.getOrDefault("sv.Use." + fn, EffectSet.empty()).contains(Effect.FS),
-                        "executed: sv.Use." + fn + " iterates an exact ArrayList and wrote nothing — got " + inf.get("sv.Use." + fn));
+                        "executed: sv.Use." + fn + " wrote nothing — got " + inf.get("sv.Use." + fn));
         } finally {
             TestCompiler.rm(cls.getParent());
         }

@@ -9,6 +9,10 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- `candor accepts` with no report: refuses with the two commands that work (record the current scan with `--no-baseline --json`, then `accepts --report` it) and says why the config's `baseline` is not used unasked (it is the previous scan, not what CI gates). The policy already came from `.candor/config`.
+- `candor accepts`: every violation the proposal leaves red now carries its reason and remedy on stderr (positional key such as an anonymous class, `(hash, fn)` twin, unwritable name, `Unknown` with no reason class, ambiguous entry).
+- `--no-baseline --json <file>` is a recording run: it exits 0 on policy violations (still printed, still in `--gate-json` as `ok:false`) so a recording step under `set -e` survives; exit 2 arms are unchanged and `candor gate --report <file>` exits 1 on them.
+
 ## [0.41.0] — 2026-11-03
 
 - **jbang catalog points at the 0.41.0 jar.**

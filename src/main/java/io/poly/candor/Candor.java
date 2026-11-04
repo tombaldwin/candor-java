@@ -2643,7 +2643,16 @@ public class Candor {
                     + unevaluated.size() + " rule(s) went unevaluated, named in the verdict document.");
         // machine verdict (before exit) — clean run writes ok:true,[]
         writeGateJson(gateJson, violations, scanGateFacts(), unevaluated, policyRefusal);
-        if (violations > 0) System.exit(1); // fail CI
+        if (violations > 0 && noBaselineFlag) {
+            // ⟨0.41.1⟩ A RECORDING RUN IS NOT THE GATE. `--no-baseline --json <file>` is the documented regeneration command and
+            // says "it does not gate" (above), yet it exited 1 on the policy's verdict after writing the file — so a recording
+            // step under `set -e` aborted on the very run whose job is to produce the report `accepts` and the next gate read.
+            // The verdict is NOT dropped: every violation line is printed above, `--gate-json` still carries it (ok:false), and
+            // the gate proper (`candor <target>`, or `candor gate --report <file>`) exits 1 on it. The exit-2 arms below still
+            // apply — unevaluable stays fail-closed on a recording run.
+            gate.println("candor-java: --no-baseline: " + violations + " violation(s) above are the policy's verdict, NOT gating this "
+                    + "recording run (exit 0, report written). To gate: `candor gate --report " + jsonOut + "` (exit 1 on them).");
+        } else if (violations > 0) System.exit(1); // fail CI
         // ⟨0.21⟩ COMPLETENESS MANIFEST (Gap 2): a CONFIGURED gate over code candor could NOT fully analyze
         // (skipped unparseable classes) cannot certify — exit 2 (could-not-evaluate), the fail-closed posture
         // (matches candor-scan's had_parse_failure). A real violation (exit 1, above) dominates. A bare scan

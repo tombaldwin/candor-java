@@ -328,7 +328,12 @@ final class Accepts {
                     proposalComment.put(L, MARK + " exceeded (adds " + String.join(" ", adds) + ")" + REPLACE + text);
                 }
                 case "unjudged" -> unjudged.add(item(L, e.fn(), e.ruleKey(), null));
-                default -> { /* ambiguous, or a state the gate did not name: kept byte for byte */ }
+                default -> {
+                    /* ambiguous, or a state the gate did not name: kept byte for byte — and said, so the row it leaves red has a cause */
+                    System.err.println("candor accepts: line " + L + " (`" + e.fn() + "`) is " + st.toUpperCase(java.util.Locale.ROOT)
+                            + " — two units share that name with different hashes, so the entry accepts NEITHER; kept as written. "
+                            + "Remedy: rename one of the two, or gate the modules separately.");
+                }
             }
         }
         List<Map<String, Object>> ignoredOut = new ArrayList<>();
@@ -337,6 +342,7 @@ final class Accepts {
         // ---- adoption candidates: the rows no entry names (computed in both modes: `unnamed`) ---------------------
         record Cand(int line, String fn, String hash, String rule, List<String> effects) {}
         List<Cand> cands = new ArrayList<>();
+        Map<String, TreeSet<String>> refused = new LinkedHashMap<>();   // reason key -> the fns no entry could be written for
         Set<String> seen = new HashSet<>();
         for (Row v : rows(d)) {
             List<Integer> prod = new ArrayList<>();
@@ -349,11 +355,14 @@ final class Accepts {
                 boolean named = false;
                 for (Accept.Entry e : entries) if (e.fn().equals(v.fn()) && e.ruleKey().equals(rule)) named = true;
                 if (named || !seen.add(rule + "\u0000" + v.fn())) continue;
-                if (twins.contains(v.fn())) continue;
-                if (Accept.positional(v.fn()) || v.fn().chars().anyMatch(c -> c == '#' || c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == 0x0B)) continue;
+                if (twins.contains(v.fn())) { refuse(refused, "twin", v.fn()); continue; }
+                if (Accept.positional(v.fn())) { refuse(refused, "positional", v.fn()); continue; }
+                if (v.fn().chars().anyMatch(c -> c == '#' || c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == 0x0B)) {
+                    refuse(refused, "unwritable", v.fn()); continue;
+                }
                 TreeSet<String> conc = new TreeSet<>(v.effects());
                 boolean unk = conc.remove("Unknown");
-                if (unk && v.classes().isEmpty()) continue;
+                if (unk && v.classes().isEmpty()) { refuse(refused, "noclass", v.fn()); continue; }
                 cands.add(new Cand(L, v.fn(), v.hash(), rule, canon(conc, unk ? v.classes() : null)));
             }
         }
@@ -455,9 +464,38 @@ final class Accepts {
                     + "`) kept UNJUDGED — this route cannot evaluate that rule, so nothing is known about the entry. Gate at scan time.");
         for (int L : ignored)
             System.err.println("candor accepts: line " + L + " is IGNORED by the gate and kept as written — repairing it is yours.");
+        printRefused(refused);
         System.err.println("candor accepts: nothing was written. To take the proposal: write it to ANOTHER path (not onto the policy — "
                 + "a shell redirect onto it empties it first), then `diff " + policyPath + " <that path>` and commit.");
         return 0;
+    }
+
+    private static void refuse(Map<String, TreeSet<String>> m, String why, String fn) {
+        m.computeIfAbsent(why, k -> new TreeSet<>(Query.BY_CODE_POINT)).add(fn);
+    }
+
+    /** ⟨0.41.1⟩ Every violation the proposal leaves red because NO line could be written for it — with the reason and the remedy,
+     *  so "after the proposal the gate exits 1 with N violation(s)" is never a number with no cause. Human channel only: the
+     *  plan document is unchanged. Up to five names per reason, then a count. */
+    private static void printRefused(Map<String, TreeSet<String>> refused) {
+        String[][] why = {
+            {"positional", "keyed by POSITION (an anonymous class `Foo$1`, a lambda `lambda$…`), which an `accept` line cannot name — a renumbering would re-point it at a different unit",
+                "give it a NAME (extract the anonymous class to a named one, a lambda to a named method), re-scan, and run `accepts` again; or fix the violation"},
+            {"twin", "a (hash, fn) TWIN — two units with this name and different hashes, so no line could name one of them",
+                "rename one of the two, or gate the modules separately; or fix the violation"},
+            {"unwritable", "named with a `#` or whitespace, which cannot be written on a policy line",
+                "rename it, or fix the violation"},
+            {"noclass", "carries an `Unknown` whose reason class this report does not carry, so no `Unknown[…]` line would cover it",
+                "re-scan with the current engine so the report carries its reason classes, then run `accepts` again; or fix the violation"},
+        };
+        for (String[] w : why) {
+            TreeSet<String> fns = refused.get(w[0]);
+            if (fns == null || fns.isEmpty()) continue;
+            List<String> shown = new ArrayList<>();
+            for (String f : fns) { if (shown.size() == 5) break; shown.add("`" + f + "`"); }
+            System.err.println("candor accepts: " + fns.size() + " violation(s) get NO accept line — " + w[1] + ": " + String.join(", ", shown)
+                    + (fns.size() > shown.size() ? ", … and " + (fns.size() - shown.size()) + " more" : "") + ". Remedy: " + w[2] + ".");
+        }
     }
 
     private static Map<String, Object> item(int line, String fn, String rule, String because) {

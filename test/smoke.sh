@@ -3745,5 +3745,40 @@ want    "accept as a verb names accepts"                        "$("$CJ" accept 
 : > "$W/acc3.pol"
 want    "an empty policy names the redirect trap"               "$("$CJ" accepts --report "$AR" --policy "$W/acc3.pol" 2>&1)" 'redirect'
 
+# ⟨0.41.1⟩ field fixes. (1) `accepts` with no report: refuses naming the commands that work, never judges the config's baseline
+# unasked. (2) every unhandled row carries its reason and remedy. (3) `--no-baseline` is a recording run: exit 0 on the policy's
+# verdict (still printed, still in --gate-json), while the gate over the recorded file exits 1.
+mkdir -p "$W/ff/src" "$W/ff/proj/.candor"
+cat > "$W/ff/src/Fz.java" <<'J'
+import java.nio.file.*;
+public class Fz {
+  static void reads() { try { Files.readAllBytes(Path.of("/tmp/x")); } catch (Exception e) {} }
+  static Runnable anon() { return new Runnable() { public void run() { reads(); } }; }
+  public static void main(String[] a) { reads(); anon().run(); }
+}
+J
+javac -d "$W/ff/proj/cls" "$W/ff/src/Fz.java"
+printf 'deny Fs Fz\n' > "$W/ff/proj/.candor/policy"
+printf 'policy .candor/policy\nbaseline .candor/baseline.json\n' > "$W/ff/proj/.candor/config"
+( cd "$W/ff/proj" && "$CJ" cls --no-baseline --json .candor/baseline.json >"$W/ff/rec.out" 2>"$W/ff/rec.err"; echo $? > "$W/ff/rec.rc" )
+want    "fieldfix: a --no-baseline recording run exits 0 on policy violations"  "exit $(cat "$W/ff/rec.rc")" 'exit 0'
+want    "fieldfix: …and still prints the policy's verdict"                       "$(cat "$W/ff/rec.out" "$W/ff/rec.err")" '[AS-EFF-006] `Fz.reads`'
+want    "fieldfix: …and says it is not gating"                                   "$(cat "$W/ff/rec.out" "$W/ff/rec.err")" 'NOT gating this recording run'
+( cd "$W/ff/proj" && "$CJ" cls --no-baseline --json .candor/baseline.json --gate-json "$W/ff/v.json" >/dev/null 2>&1 )
+want    "fieldfix: …the verdict document still says ok:false"                    "$(cat "$W/ff/v.json")" '"ok": false'
+( cd "$W/ff/proj" && "$CJ" gate --report .candor/baseline.json >/dev/null 2>&1 ); want "fieldfix: the gate over the recorded file exits 1" "exit $?" 'exit 1'
+( cd "$W/ff/proj" && "$CJ" cls >/dev/null 2>&1 ); want "fieldfix: a plain scan with a policy still exits 1" "exit $?" 'exit 1'
+ffe="$(cd "$W/ff/proj" && "$CJ" accepts --adopt --because x 2>&1 >/dev/null)"; ffrc=$?
+want    "fieldfix: accepts with no report is exit 2"                             "exit $ffrc" 'exit 2'
+want    "fieldfix: …names the command that records the current scan"             "$ffe" 'candor <target> --no-baseline --json .candor/report.current.json'
+want    "fieldfix: …names the command that then runs accepts"                    "$ffe" 'candor accepts --report .candor/report.current.json --adopt --because'
+want    "fieldfix: …names the config's baseline and says why it is not used"     "$ffe" 'PREVIOUS recorded scan'
+( cd "$W/ff/proj" && "$CJ" cls --no-baseline --json .candor/report.current.json >/dev/null 2>&1 )
+ffp="$(cd "$W/ff/proj" && "$CJ" accepts --report .candor/report.current.json --adopt --because x 2>&1 >/dev/null)"
+want    "fieldfix: accepts takes the policy from .candor/config"                 "$ffp" 'accept'
+want    "fieldfix: the positional refusal names the class"                       "$ffp" '`Fz$1.run`'
+want    "fieldfix: …its reason"                                                  "$ffp" 'keyed by POSITION'
+want    "fieldfix: …and its remedy"                                              "$ffp" 'give it a NAME'
+
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

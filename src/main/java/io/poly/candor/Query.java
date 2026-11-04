@@ -701,6 +701,10 @@ public final class Query {
         List<String> reportSet = List.of();
         if (!TWO_REPORT.contains(cmd)) {
             reportSet = locatorReportSet(reportLocator);
+            if (reportSet.isEmpty() && cmd.equals("accepts") && !explicitReportGiven) {
+                System.err.print(acceptsNoReportMessage(reportLocator));
+                return 2;
+            }
             if (reportSet.isEmpty()) {
                 Path lp = Path.of(reportLocator);
                 reportNotFound(Files.isDirectory(lp)
@@ -948,6 +952,40 @@ public final class Query {
      *
      * <p>Anchored at the CWD, which is where this verb's discovery starts — it has no scan target.
      */
+    /** The config's {@code baseline} (or CANDOR_BASELINE), resolved the way {@link #resolvePolicyFallback} resolves the policy;
+     *  null when neither names one. Read only to NAME it in a refusal — {@code accepts} never judges against it unasked. */
+    static String resolveBaselineFallback() {
+        String env = System.getenv("CANDOR_BASELINE");
+        if (env != null && !env.isEmpty()) return env;
+        try {
+            java.nio.file.Path cfg = Config.discover(java.nio.file.Path.of("."));
+            if (cfg == null) return null;
+            String p = Config.load(cfg, false).valuesView().get("baseline");
+            return p == null || p.isEmpty() ? null : p;
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** ⟨0.41.1⟩ `accepts` with no report named and none discovered. The refusal says WHICH report each choice would judge and
+     *  prints commands that run. It does not fall back to the config's {@code baseline}: that file is the previous recorded
+     *  scan, and refreshing against it would delete the entries of code written since (stale by the baseline's age) and adopt
+     *  only what the baseline held — a proposal the CI gate, which judges the CURRENT scan, would then contradict. */
+    static String acceptsNoReportMessage(String locator) {
+        String base = resolveBaselineFallback();
+        String cur = ".candor/report.current.json";
+        StringBuilder m = new StringBuilder();
+        m.append("candor accepts: no report to judge — nothing matches `").append(locator).append("` (and no --report / CANDOR_REPORT).\n");
+        m.append("  `accepts` reads a REPORT; it does not scan. The report that matches what CI gates is the CURRENT scan:\n");
+        m.append("      candor <target> --no-baseline --json ").append(cur).append("\n");
+        m.append("      candor accepts --report ").append(cur).append(" --adopt --because <reason>\n");
+        if (base != null)
+            m.append("  The config's baseline `").append(base).append("` is the PREVIOUS recorded scan, so it is not used unasked "
+                    + "(a refresh against it deletes entries for code written since). To judge it on purpose: "
+                    + "candor accepts --report ").append(base).append(" ...\n");
+        return m.toString();
+    }
+
     static String resolvePolicyFallback() {
         String env = System.getenv("CANDOR_POLICY");
         if (env != null) return env;

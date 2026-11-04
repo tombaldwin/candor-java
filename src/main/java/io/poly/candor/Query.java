@@ -6009,8 +6009,14 @@ public final class Query {
             String indent = "  ".repeat(i + 1);
             String arrow = i == 0 ? "" : "→ ";
             boolean isSource = i == chain.size() - 1;
+            // SOUNDNESS R1468(b): `loc` is the FUNCTION's first line (SPEC §2), not the statement that carries the
+            // charge. Labelling it "source @ <loc>" read as a statement and sent an audit to the wrong constructor, so
+            // the source step says what it is: charged somewhere in THIS body, the function declared at <loc>. The
+            // report records no per-call locator, so the call itself cannot be named from here.
             String tag = isSource
-                    ? "   [" + effect + " source" + (f != null && !f.loc().isEmpty() ? " @ " + f.loc() : "") + "]"
+                    ? "   [" + effect + " source: charged somewhere in this function's body"
+                      + (f != null && !f.loc().isEmpty() ? " (function declared @ " + f.loc() + ")" : "")
+                      + "; the report records no per-call locator]"
                     : "";
             System.out.println(indent + arrow + chain.get(i) + tag);
         }

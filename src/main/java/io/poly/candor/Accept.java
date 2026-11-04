@@ -236,7 +236,12 @@ final class Accept {
         accepted = null;
         staleLinesLast = new TreeSet<>();
         twinNames = new HashSet<>();
+        callersOf = new HashMap<>();
         if (entries.isEmpty() && !forceTwins) return;
+        for (var e : gi.edges().entrySet()) {
+            String caller = gi.disp(e.getKey());
+            for (String callee : e.getValue()) callersOf.computeIfAbsent(gi.disp(callee), x -> new TreeSet<>()).add(caller);
+        }
         // (hash, fn) TWINS: two units of this run sharing a name. The scan route gates one analysis world
         // (a name is a unit), the report route keys by hash, so >1 key under a name IS the twin case.
         Map<String, Set<String>> byName = new HashMap<>();
@@ -264,6 +269,11 @@ final class Accept {
         return true;
     }
 
+    /** This run's call graph, inverted and by display name: callee -> the units that edge it. It is how a lambda
+     *  finds WHICH overload encloses it: javac's {@code lambda$over$1} does not say, but the enclosing method is the
+     *  one that holds the invokedynamic, and the scan edges exactly that method to the lambda unit. */
+    private static Map<String, Set<String>> callersOf = new HashMap<>();
+
     private static final Pattern LAMBDA = Pattern.compile("^(.*)\\.lambda\\$(.+)\\$\\d+$");
 
     /** Candidate FQ names of the method a javac lambda is lexically inside (§6.2 nested-unit rule). */
@@ -275,6 +285,16 @@ final class Accept {
         if (meth.equals("new")) out.add(cls + ".<init>");
         else if (meth.equals("static")) out.add(cls + ".<clinit>");
         else out.add(cls + "." + meth);
+        // An overloaded method or constructor is reported WITH its parameter list, so the bare name above never
+        // matches it. Take the overload from the call graph instead of guessing: only a unit that edges THIS
+        // lambda and is spelled `cls.meth(...)` (or, for a lambda in a lambda, another lambda of the class, so the
+        // climb can continue) is a candidate. An overload that does not enclose the lambda has no such edge, so an
+        // entry on it covers nothing here (fail-closed); the subset conditions in settle() still apply unchanged.
+        String head = meth.equals("new") ? cls + ".<init>(" : meth.equals("static") ? null : cls + "." + meth + "(";
+        for (String caller : callersOf.getOrDefault(fn, Set.of())) {
+            boolean lam = LAMBDA.matcher(caller).matches() && caller.startsWith(cls + ".lambda$");
+            if ((head != null && caller.startsWith(head)) || lam) { if (!out.contains(caller)) out.add(caller); }
+        }
         return out;
     }
 

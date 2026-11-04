@@ -9,6 +9,9 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- `accept` (SPEC 6.2 nested-unit rule): a lambda inside an OVERLOADED method or constructor now rides its enclosing entry (SOUNDNESS R1469). The enclosing unit is reported with its parameter list and javac's lambda name does not say which overload, so the overload is the one whose call-graph edge reaches the lambda; an entry on an overload that does not enclose it covers nothing, and the subset conditions are unchanged. A lambda the enclosing method only stores stays red.
+- `candor path`: the source step no longer reads as "source @ <first line>"; it says the charge is somewhere in the function's body (function declared @ loc) and that the report records no per-call locator (SOUNDNESS R1468(b), reporting only; naming the call needs a per-call locator in the report).
+
 - `candor accepts` with no report: refuses with the two commands that work (record the current scan with `--no-baseline --json`, then `accepts --report` it) and says why the config's `baseline` is not used unasked (it is the previous scan, not what CI gates). The policy already came from `.candor/config`.
 - `candor accepts`: every violation the proposal leaves red now carries its reason and remedy on stderr (positional key such as an anonymous class, `(hash, fn)` twin, unwritable name, `Unknown` with no reason class, ambiguous entry).
 - `--no-baseline --json <file>` is a recording run: it exits 0 on policy violations (still printed, still in `--gate-json` as `ok:false`) so a recording step under `set -e` survives; exit 2 arms are unchanged and `candor gate --report <file>` exits 1 on them.

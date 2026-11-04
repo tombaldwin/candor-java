@@ -580,6 +580,8 @@ pth="$("$CJ" path "$W/p.json" handle Net)"
 want   "path: traces the chain through the middle fn"  "$pth" 'Pp.mid'
 want   "path: marks the direct source"                 "$pth" 'Net source'
 want   "path: names the leaf source"                   "$pth" 'Pp.leafNet'
+wantnot "R1468(b): path does not label the function's first line a statement source" "$pth" 'source @'
+want   "R1468(b): path says the charge is somewhere in the body, declared @ loc" "$pth" "function declared @"
 want   "path --json: structured steps with source flag" "$("$CJ" path "$W/p.json" handle Net --json)" '"source": true'
 want   "path: honest when the fn doesn't perform the effect" "$("$CJ" path "$W/p.json" handle Db)" 'does not perform Db'
 
@@ -3744,6 +3746,42 @@ wantnot "accepts without --adopt writes no line for a new row"  "$("$CJ" accepts
 want    "accept as a verb names accepts"                        "$("$CJ" accept 2>&1)" 'accepts'
 : > "$W/acc3.pol"
 want    "an empty policy names the redirect trap"               "$("$CJ" accepts --report "$AR" --policy "$W/acc3.pol" 2>&1)" 'redirect'
+
+# ⟨0.41.1⟩ SOUNDNESS R1469: a lambda in an OVERLOADED method or constructor rides its enclosing `accept` entry. The enclosing
+# unit is reported WITH its parameter list; javac's lambda name does not say which overload, so the overload is the one whose
+# call-graph edge reaches the lambda. An entry on an overload that does NOT enclose it must cover nothing (fail-closed), and a
+# lambda the enclosing method only stores (never runs) stays red because the enclosing row lacks its effect.
+mkdir -p "$W/ov/src/lx" "$W/ov/cls"
+cat > "$W/ov/src/lx/L.java" <<'JAVA'
+package lx;
+import java.nio.file.*;
+import java.util.function.*;
+public class L {
+    static void w() { try { Files.writeString(Path.of("/tmp/candor-ov-x"), "x"); } catch (Exception e) { throw new RuntimeException(e); } }
+    public static void plain() { Runnable r = () -> w(); r.run(); }
+    public static void over(int a) { Runnable r = () -> w(); r.run(); }
+    public static void over(String a) { Supplier<String> s = () -> { w(); return "x"; }; s.get(); }
+    public L() { Runnable r = () -> w(); r.run(); }
+    public L(int a) { Runnable r = () -> w(); r.run(); }
+    static Runnable kept;
+    public static void deferred() { kept = () -> w(); }
+}
+JAVA
+javac -d "$W/ov/cls" "$W/ov/src/lx/L.java"
+OVP() { printf 'deny Fs lx\n'; for f in "$@"; do printf 'accept lx.L.%s Fs for deny Fs lx because t\n' "$f"; done; }
+OVP '<init>()' '<init>(int)' 'over(String)' 'over(int)' plain w > "$W/ov/all.pol"
+OVA="$("$CJ" "$W/ov/cls" --policy "$W/ov/all.pol" 2>&1)"
+wantnot "R1469 lambda in overloaded method rides its enclosing entry (over)"  "$OVA" 'lambda$over$'
+wantnot "R1469 lambda in overloaded constructor rides its enclosing entry"    "$OVA" 'lambda$new$'
+want    "R1469 a lambda the enclosing method only stores stays red"           "$OVA" 'lx.L.lambda$deferred$'
+OVP '<init>()' '<init>(int)' 'over(String)' plain w > "$W/ov/part.pol"
+OVB="$("$CJ" "$W/ov/cls" --policy "$W/ov/part.pol" 2>&1)"
+want    "R1469 no entry on over(int): its own lambda stays red"               "$OVB" 'lambda$over$1'
+wantnot "R1469 an entry on over(String) does not cover over(int)'s lambda, but covers its own" "$OVB" 'lambda$over$2'
+OVP 'over(String)' plain w > "$W/ov/part2.pol"
+OVC="$("$CJ" "$W/ov/cls" --policy "$W/ov/part2.pol" 2>&1)"
+want    "R1469 over(String) entry alone leaves over(int)'s lambda red"        "$OVC" 'lambda$over$1'
+want    "R1469 entry on a different constructor leaves lambda\$new\$4 red"    "$(OVP '<init>()' w > "$W/ov/p4.pol"; "$CJ" "$W/ov/cls" --policy "$W/ov/p4.pol" 2>&1)" 'lambda$new$4'
 
 # ⟨0.41.1⟩ field fixes. (1) `accepts` with no report: refuses naming the commands that work, never judges the config's baseline
 # unasked. (2) every unhandled row carries its reason and remedy. (3) `--no-baseline` is a recording run: exit 0 on the policy's

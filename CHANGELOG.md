@@ -11,6 +11,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## [0.41.0] — 2026-11-03
 
+- **jbang catalog points at the 0.41.0 jar.**
+
 - **`--help` lists `accepts`** (in the verb block and under ALL ACTIONS). The verb existed but the help, which conformance PART 43 derives
   its verb matrix from, did not name it (SPEC §3.3: `--help` MUST list what the binary accepts).
 

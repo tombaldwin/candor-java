@@ -9,6 +9,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+## [0.41.1] — 2026-11-04
+
 - `accept` (SPEC 6.2 nested-unit rule): a lambda inside an OVERLOADED method or constructor now rides its enclosing entry (SOUNDNESS R1469). The enclosing unit is reported with its parameter list and javac's lambda name does not say which overload, so the overload is the one whose call-graph edge reaches the lambda; an entry on an overload that does not enclose it covers nothing, and the subset conditions are unchanged. A lambda the enclosing method only stores stays red.
 - `candor path`: the source step no longer reads as "source @ <first line>"; it says the charge is somewhere in the function's body (function declared @ loc) and that the report records no per-call locator (SOUNDNESS R1468(b), reporting only; naming the call needs a per-call locator in the report).
 

@@ -9,6 +9,16 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **⚠ A for-each over a project `AbstractList` (or a project `AbstractMap`'s `keySet()`/`values()`) runs the project's
+  overrides, and the report now says so (SOUNDNESS R1462).** `AbstractList.iterator()` returns an `Itr` whose `next()`
+  calls the list's own `get(int)`; the JDK site table recorded only what the acquiring member's body runs, so it had no
+  line for `iterator`, `listIterator`, `subList`, `spliterator`, `keySet`, `values` and their siblings, and the iterating
+  function read pure over an executed file write. The table now names the hooks of a returned object built over `this`.
+  Separately, the argument contract resolved a JDK re-entry SET to its first member only (`it.hasNext()` over a project
+  list whose `size()` writes was charged its pure `get`); it now takes every member. ADDS concrete edges only. Residual:
+  a `java.util`-typed receiver with no caller-visible allocation (a field, a call result) still takes no re-entry —
+  the call-target round 2 ruling on CHA over a JDK owner.
+
 ## [0.41.1] — 2026-11-04
 
 - **jbang catalog points at the 0.41.1 jar.**

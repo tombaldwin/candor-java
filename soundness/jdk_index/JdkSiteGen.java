@@ -803,6 +803,9 @@ final class JdkSiteGen {
     void run() {
         runPass();          // requests every top key (empty at first)
         drain();
+        // R1462: a returned view's members are requested only once the member that builds it has converged (its
+        // return origins name the view), and a nested view only once ITS builder has — so request until nothing new
+        for (int n = -1, i = 0; n != memo.size() && i < VIEW_DEPTH + 2; i++) { n = memo.size(); runPass(); drain(); }
         out.clear();
         runPass();          // reads the converged summaries
         decorators();
@@ -849,12 +852,136 @@ final class JdkSiteGen {
                     if (h.slot() instanceof Slot sl && sl.i < 0 && (!ext || name.equals("<init>"))) continue;
                     hs.add(h.slot() + " " + h.member() + (h.guards().isEmpty() ? "" : " " + String.join(",", new TreeSet<>(h.guards()))));
                 }
+                boolean open = sm.open;
+                if (ext && !name.equals("<init>") && (own == null || (own.access & Opcodes.ACC_STATIC) == 0))
+                    open |= viewHooks(x, sm, hs);
                 residual(x, name, desc, hs);
-                if (!hs.isEmpty() && sm.open) hs.add("! open");
+                if (!hs.isEmpty() && open) hs.add("! open");
                 prune(hs);
                 if (!hs.isEmpty()) out.put(x + "." + name + desc, hs);
             }
         }
+    }
+
+    // ------------------------------------------------------------------------------------------- returned views
+    /** SOUNDNESS R1462 — A MEMBER THAT RETURNS AN OBJECT IT BUILT OVER {@code this}. {@code AbstractList.iterator()}
+     *  runs no user code itself: it returns {@code new Itr()}, and it is the Itr's {@code next()} that runs
+     *  {@code AbstractList.this.get(int)} — later, in whatever body advances the iterator. The summary above records
+     *  only what the member's own body runs, so the line was ABSENT and a for-each over a project {@code AbstractList}
+     *  whose {@code get} wrote a file read pure (executed). Likewise {@code listIterator} (get/set/add/remove),
+     *  {@code subList}, {@code spliterator}, and {@code AbstractMap.keySet()/values()}, whose views run
+     *  {@code entrySet()}, {@code size()}, {@code containsKey}…
+     *
+     *  <p>The hooks of a RETURNED allocation that holds {@code this} (directly, or through a view it returns in turn,
+     *  bounded) are hooks of the member: every public member of the view's class is summarised on that allocation and
+     *  each call it makes on the captured {@code this} is a {@code t} hook. That is an over-approximation in TIME — the
+     *  body that acquires the view is charged what any later use of it can run — never in reach: no hook is named that
+     *  some member of the returned object cannot run. A view member that hands a value of its own to user code (an
+     *  argument's {@code accept}) or is itself OPEN makes the line OPEN, so the engine only ever ADDS these.
+     *  Returns whether the line must be marked open. */
+    boolean viewHooks(String x, Summary sm, TreeSet<String> hs) {
+        viewOwner = x;
+        boolean[] open = {false};
+        boolean added = false;
+        Set<String> seen = new HashSet<>();
+        for (Org o : sm.ret) {
+            if (!(o instanceof Alloc a)) continue;
+            View v = new View(a.cls, outerBinds(a.binds, null), a.guards);
+            if (!v.reachesThis()) continue;
+            int before = hs.size();
+            viewMembers(v, hs, open, seen, 0);
+            added |= hs.size() > before;
+        }
+        return added && open[0];
+    }
+    /** A returned object: its class, and each field's value in the ACQUIRING member's terms — {@link #THIS_MARK} for its
+     *  {@code this}, or an enclosing {@link View} (a SubList's iterator holds the SubList). */
+    record View(String cls, Map<String, Set<Object>> binds, Set<String> guards) {
+        boolean reachesThis() {
+            for (Set<Object> s : binds.values()) for (Object o : s)
+                if (o == THIS_MARK || (o instanceof View w && w.reachesThis())) return true;
+            return false;
+        }
+    }
+    static final Object THIS_MARK = new Object();
+    /** the class whose member acquires the view: a hook is kept only for a member a user subclass of it can override */
+    String viewOwner;
+    static final int VIEW_DEPTH = 3;
+
+    /** {@code binds} of an allocation, in the terms of the body that holds it: that body's {@code this} is
+     *  {@code self} when it is itself a view (else the acquiring member's this), and its field {@code g} is
+     *  {@code self.binds[g]}. Parameters and the acquiring body's own fields are not followed (a JDK object). */
+    static Map<String, Set<Object>> outerBinds(Map<String, Set<Org>> binds, View self) {
+        Map<String, Set<Object>> r = new HashMap<>();
+        for (var e : binds.entrySet()) {
+            Set<Object> m = new LinkedHashSet<>();
+            for (Org o : e.getValue()) {
+                if (o instanceof Slot sl && sl.i < 0) m.add(self == null ? THIS_MARK : self);
+                else if (o instanceof Fld f && self != null) m.addAll(self.binds.getOrDefault(f.f, Set.of()));
+            }
+            if (!m.isEmpty()) r.put(e.getKey(), m);
+        }
+        return r;
+    }
+
+    void viewMembers(View v, TreeSet<String> hs, boolean[] open, Set<String> seen, int depth) {
+        if (depth > VIEW_DEPTH) return;
+        for (String md : instanceMembers(v.cls())) {
+            int sp = md.indexOf('(');
+            viewMember(v, md.substring(0, sp), md.substring(sp), hs, open, seen, depth);
+        }
+    }
+
+    /** One member of a view, run on it: its calls on a field holding the acquiring {@code this} are hooks; a call on
+     *  a field holding an enclosing view is that view's member, followed; a view it returns is walked in turn. */
+    void viewMember(View v, String name, String desc, TreeSet<String> hs, boolean[] open, Set<String> seen, int depth) {
+        if (depth > VIEW_DEPTH || !seen.add(System.identityHashCode(v) + ":" + name + desc)) return;
+        String b = resolve(v.cls(), name, desc);
+        if (b == null) return;
+        Summary cs = summary(v.cls(), b, name, desc, 0);
+        if (cs.open) open[0] = true;
+        for (Hook h : cs.hooks()) {
+            if (h.slot() instanceof Fld f) {
+                for (Object o : v.binds().getOrDefault(f.f, Set.of())) {
+                    String mem = h.member().startsWith("~") ? h.member().substring(1) : h.member();
+                    if (o == THIS_MARK) {
+                        int p = mem.indexOf('(');
+                        if (!h.member().startsWith("~") && overridable(declarationFrom(viewOwner, mem.substring(0, p), mem.substring(p)))
+                                && declarationFrom(viewOwner, mem.substring(0, p), mem.substring(p)) != null)
+                            hs.add("t " + mem + (v.guards().isEmpty() ? "" : " " + String.join(",", new TreeSet<>(v.guards()))));
+                    } else if (o instanceof View w) {
+                        int p = mem.indexOf('(');
+                        viewMember(w, mem.substring(0, p), mem.substring(p), hs, open, seen, depth + 1);
+                    }
+                }
+            } else if (h.slot() instanceof Slot sl && sl.i >= 0 || h.slot() instanceof Elem) {
+                open[0] = true;   // the view hands a value it was given to user code: not part of this account
+            }
+        }
+        for (Org o : cs.ret) {
+            if (!(o instanceof Alloc a)) continue;
+            View c = new View(a.cls, outerBinds(a.binds, v), v.guards());
+            if (c.reachesThis()) viewMembers(c, hs, open, seen, depth + 1);
+        }
+    }
+
+    /** The public/protected instance members a value of class {@code c} answers (declared or inherited). */
+    List<String> instanceMembers(String c) {
+        Set<String> out = new TreeSet<>();
+        Deque<String> q = new ArrayDeque<>(List.of(c));
+        Set<String> seen = new HashSet<>();
+        while (!q.isEmpty()) {
+            String t = q.poll();
+            if (!seen.add(t)) continue;
+            ClassNode tn = classes.get(t);
+            if (tn == null) continue;
+            for (MethodNode m : tn.methods)
+                if ((m.access & (Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED)) != 0 && (m.access & Opcodes.ACC_STATIC) == 0
+                        && !m.name.startsWith("<")) out.add(m.name + m.desc);
+            if (tn.superName != null) q.add(tn.superName);
+            q.addAll(tn.interfaces);
+        }
+        return new ArrayList<>(out);
     }
 
     // ------------------------------------------------------------------------------------------- stream decorators
@@ -914,6 +1041,12 @@ final class JdkSiteGen {
         // a PrintStream formats through an OutputStreamWriter its constructor wrapped around THIS (charOut/textOut), so
         // every text member ends in this.write(byte[],int,int): a chain through fields built in the constructor, which
         // the summary does not follow (a field-held allocation's bindings are not carried) — named here instead
+        // R1462: AbstractMap's keySet()/values() views iterate through `AbstractMap.this.entrySet().iterator()`, called in
+        // the CONSTRUCTOR of the view's iterator over a field of a field (this$1.this$0), which the origins do not
+        // follow — named here, where the view is the JDK's own (the user did not override keySet/values)
+        if ((name.equals("keySet") && desc.equals("()Ljava/util/Set;") || name.equals("values") && desc.equals("()Ljava/util/Collection;"))
+                && "java/util/AbstractMap".equals(resolve(x, name, desc)) && extendable(classes.get(x)))
+            hs.add("t entrySet()Ljava/util/Set;");
         if (isSub(x, "java/io/PrintStream") && extendable(classes.get(x))
                 && (name.equals("print") || name.equals("println") || name.equals("append") || name.equals("format")
                     || name.equals("printf") || name.equals("write") && desc.startsWith("(Ljava/lang/String;")))

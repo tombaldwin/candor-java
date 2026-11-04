@@ -858,24 +858,25 @@ final class ArgContract {
         if (exact) {
             // A provable `new T` IS that type: a project T resolves to its one body; an EXTERNAL T
             // (`new ArrayList<>()`) has no project body, and CHA from it would charge every project subclass.
-            String m = c.byName.containsKey(t) ? jvmTarget(c, t, name, desc) : null;
-            if (m != null) return new Res(List.of(m), null);
+            List<String> ms = c.byName.containsKey(t) ? jvmTargets(c, t, name, desc) : List.of();
+            if (!ms.isEmpty()) return new Res(ms, null);
             DepFn d = Candor.nearestDepOverride(t, name, desc);
             return d == null ? OUTSIDE : new Res(List.of(), d);
         }
         if (t.startsWith("java/") || !c.byName.containsKey(t)) return WIDE;
         Set<String> bodies = new TreeSet<>();
+        Set<List<String>> answers = new HashSet<>();   // one per runtime type: the bodies an instance of it runs
         boolean outside = false;
         for (String sub : c.subtypeIndex.getOrDefault(t, List.of(t))) {
             ClassNode cn = c.byName.get(sub);
             if (cn == null) { outside = true; continue; }
             if ((cn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_INTERFACE)) != 0) continue;
-            String b = jvmTarget(c, sub, name, desc);
-            if (b == null) outside = true; else bodies.add(b);
+            List<String> bs = jvmTargets(c, sub, name, desc);
+            if (bs.isEmpty()) outside = true; else { bodies.addAll(bs); answers.add(bs); }
         }
         if (!Cha.samLambdaImplementors(t, name, desc).isEmpty()) outside = true;   // a lambda is a runtime type too
         if (bodies.isEmpty()) return outside ? OUTSIDE : null;
-        if (bodies.size() > 1 || outside) return WIDE;
+        if (answers.size() > 1 || outside) return WIDE;
         return new Res(new ArrayList<>(bodies), null);
     }
 
@@ -896,6 +897,18 @@ final class ArgContract {
             x = cn.superName;
         }
         return m;
+    }
+
+    /** SOUNDNESS R1462 — EVERY body an instance of exactly {@code t} runs for the member: {@link #jvmTarget}'s one
+     *  declaration, or — where no project class declares it and a JDK body runs — every project body that JDK body
+     *  re-enters ({@link Cha#monomorphicTargets}, the site table). {@link #jvmTarget} answers the FIRST of those, so a
+     *  re-entry set was cut to its first member: {@code it.hasNext()} over a project {@code AbstractList} whose
+     *  {@code size()} wrote a file was resolved to its pure {@code get} alone (executed). */
+    static List<String> jvmTargets(AnalysisContext c, String t, String name, String desc) {
+        List<String> all = Cha.monomorphicTargets(t, name, desc);
+        if (all.size() > 1) return all;
+        String m = jvmTarget(c, t, name, desc);
+        return m == null ? List.of() : List.of(m);
     }
 
     private static boolean jdkClassDeclares(String internal, String name, String desc) {

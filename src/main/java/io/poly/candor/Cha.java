@@ -828,6 +828,43 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         return result;
     }
 
+    /** SOUNDNESS R1461 — which project subtypes of {@code owner} contribute each of {@link #chaTargets}' answers, by
+     *  the same per-subtype walk (own declaration, inherited project body, a priced JDK re-entry). A target no subtype
+     *  accounts for (the owner's own inherited concrete) is absent from the map, and {@link GenericHedge} keeps it. */
+    static Map<String, Set<String>> chaTargetSubtypes(String owner, String name, String desc) {
+        AnalysisContext c = ctx();
+        Map<String, Set<String>> out = new LinkedHashMap<>();
+        for (String cName : c.subtypeIndex.getOrDefault(owner, List.of())) {
+            ClassNode cn = c.byName.get(cName);
+            if (cn == null) continue;
+            List<String> ts = new ArrayList<>();
+            if (declaresConcrete(cn, name, desc)) ts.add(methodId(cn.name.replace('/', '.'), name, desc));
+            else {
+                String impl = nearestConcreteSuperNoReentry(cn.name, name, desc);
+                if (impl != null) ts.add(impl);
+                else if ((cn.access & Opcodes.ACC_ABSTRACT) == 0 && priced(cn.name, name, desc) && reentryOverOwner(owner, name, desc))
+                    ts.addAll(jdkReentryTargets(cn.name, name, desc));
+            }
+            for (String t : ts) out.computeIfAbsent(t, k -> new LinkedHashSet<>()).add(cName);
+        }
+        return out;
+    }
+
+    /** {@link #chaTargetSubtypes} for {@link #extraReentry}: the subtypes whose JDK re-entry contributes each body. */
+    static Map<String, Set<String>> extraReentrySubtypes(String owner, String name, String desc) {
+        Map<String, Set<String>> out = new LinkedHashMap<>();
+        if (!reentryOverOwner(owner, name, desc)) return out;
+        AnalysisContext c = ctx();
+        for (String cName : c.subtypeIndex.getOrDefault(owner, List.of())) {
+            ClassNode cn = c.byName.get(cName);
+            if (cn == null || (cn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_INTERFACE)) != 0) continue;
+            if (declaresConcrete(cn, name, desc) || nearestConcreteSuperNoReentry(cn.name, name, desc) != null) continue;
+            if (priced(cn.name, name, desc)) continue;
+            for (String t : jdkReentryTargets(cn.name, name, desc)) out.computeIfAbsent(t, k -> new LinkedHashSet<>()).add(cName);
+        }
+        return out;
+    }
+
     /** SOUNDNESS R1306 — the JDK re-entry bodies {@link #chaTargets} HELD BACK for {@code owner.name}: where adding them
      *  would carry a narrow answer past the bound, chaTargets keeps the declared overrides' edges and drops the
      *  substitutes (so a narrow answer is never traded for a broad one). Dropped was silent: with NO declared override

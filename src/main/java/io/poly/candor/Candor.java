@@ -4303,6 +4303,7 @@ public class Candor {
             // is fixed, so hoist it out of the per-instruction loop (used by the R17 gate below).
             MethodScan s = new MethodScan(mn, id, dir, taintFrames(ctx, cn, mn), provFrames(cn, mn),
                     constLocals, urlLocals, connLocals, ctx.entryPoints.contains(id), joins);
+            s.cls = cn;
             for (AbstractInsnNode insn : mn.instructions) {
                 if (insn instanceof MethodInsnNode min) {
                     handleMethodInsn(ctx, s, min);
@@ -4340,6 +4341,7 @@ public class Candor {
         // runtime-path `Path.of`/`Paths.get`/`new File` pays for them. Null + tried = the analyzer failed.
         Frame<SourceValue>[] srcFrames;
         boolean srcFramesTried;
+        ClassNode cls;                           // (R1461) the declaring class — its Signature binds `this`'s type
         // SOUNDNESS R817 — the call sites in this method at which a Net host literal was CAPTURED into
         // `hosts`. Read only by {@link #datagramPacketDetermined}: a packet's address is visible to the gate
         // exactly when the call that produced it put its host on this unit's surface.
@@ -7264,6 +7266,25 @@ public class Candor {
         return springTyped;
     }
 
+    /** SOUNDNESS R1461 — the CHA edges of a JDK-owned dispatch, minus those {@link GenericHedge} proves
+     *  generic-incompatible with the receiver's declared type; each demoted edge becomes a disclosed
+     *  {@code Unknown[dispatch:<owner>.<member>]} on this site instead (a hedge, never a drop: heap pollution can make
+     *  the incompatible implementor the one that runs). Only where nothing else decides the call ({@code effect},
+     *  a Spring-typed receiver) — those keep every edge. */
+    static List<String> hedgeIncompatible(AnalysisContext ctx, MethodScan s, MethodInsnNode min, String owner,
+            String chaOwner, List<String> targets, Effect effect, boolean springTyped, boolean reentry) {
+        if (targets.isEmpty() || effect != null || springTyped || !JdkSites.isJdk(chaOwner)) return targets;
+        Set<String> gone = reentry ? GenericHedge.demotedReentry(s.cls, s.mn, min, chaOwner, targets)
+                : GenericHedge.demoted(s.cls, s.mn, min, chaOwner, targets);
+        if (gone.isEmpty()) return targets;
+        s.dir.add(Effect.UNKNOWN);
+        ctx.unknownWhy.computeIfAbsent(s.id, k -> new TreeSet<>())
+                .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
+        List<String> kept = new ArrayList<>(targets);
+        kept.removeAll(gone);
+        return kept;
+    }
+
     /** An INVOKEVIRTUAL/INVOKEINTERFACE dispatch: the CHA-exempt surface, monomorphic-receiver
      *  narrowing, bounded CHA with the closed-enum/sealed/closed-world refinements, and the honest
      *  Unknown branches (broad drop, missing project impl, unpinned JDK functional SAM). Returns true
@@ -7453,7 +7474,8 @@ public class Candor {
             if (!ExactTypes.covers(min.name, min.desc)) {
                 List<String> extra = Cha.extraReentry(chaOwner, min.name, min.desc);
                 if (!extra.isEmpty()) {
-                    if (Cha.inBound(extra, chaOwner)) ctx.edges.get(id).addAll(extra);
+                    if (Cha.inBound(extra, chaOwner)) ctx.edges.get(id).addAll(hedgeIncompatible(ctx, s, min, owner,
+                            chaOwner, extra, effect, springTyped, true));
                     else ctx.argContractFloor.computeIfAbsent(id, k -> new TreeSet<>())
                             .add(chaOwner + "." + min.name + min.desc + "\t" + chaOwner + "\tS4");
                 }
@@ -7520,7 +7542,8 @@ public class Candor {
                 ExactTypes.record(id, mn, min, rf0.getStackSize() - Type.getArgumentTypes(min.desc).length - 1,
                         chaOwner, min.name, min.desc, onParam ? "P" : "D");
             } else {
-                ctx.edges.get(id).addAll(targets);
+                ctx.edges.get(id).addAll(hedgeIncompatible(ctx, s, min, owner, chaOwner, targets, effect, springTyped,
+                        false));
             }
             // SOUNDNESS R530b — THE CANDIDATE SET IS INCOMPLETE WHENEVER A LAMBDA IMPLEMENTS THE SAM.
             //

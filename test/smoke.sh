@@ -150,6 +150,42 @@ cp "$W/r.json" "$W/nosidecar.json"  # deliberately no .callgraph.json beside it
 nodis="$("$CJ" tour --report "$W/nosidecar.json" 2>&1 1>/dev/null)"
 absent "a MISSING sidecar prints NO disclosure (silent fallback is correct)" "$nodis" 'call graph may be incomplete'
 
+echo "== toolchain record: the report says which JDK ran; a baseline from another JDK warns, never changes a verdict =="
+J21=/opt/homebrew/opt/openjdk@21
+tcrun() { JAVA_HOME="$1" "$CJ" "${@:2}"; }
+if [ -x "$J21/bin/java" ] && [ "$("$J21/bin/java" -XshowSettings:properties -version 2>&1 | sed -n 's/.*java.specification.version = //p')" = "21" ]; then
+  OTHER=""
+  for cand in /opt/homebrew/opt/openjdk@17 /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home; do [ -x "$cand/bin/java" ] && OTHER="$cand" && break; done
+  [ -z "$OTHER" ] && OTHER="$(/usr/libexec/java_home -v 17 2>/dev/null || true)"
+  # else whatever `java` is on PATH, if it is a 17 (sdkman etc.)
+  if [ -z "$OTHER" ] && command -v java >/dev/null 2>&1; then
+    h="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
+    [ "$("$h/bin/java" -XshowSettings:properties -version 2>&1 | sed -n 's/.*java.specification.version = //p')" = "17" ] && OTHER="$h"
+  fi
+  tcrun "$J21" "$W/cls" --json "$W/tc21.json" >/dev/null 2>&1
+  want "report records the JDK it ran on (21)"  "$(cat "$W/tc21.json")" '"toolchain": "jdk-21"'
+  if [ -n "$OTHER" ] && [ -x "$OTHER/bin/java" ]; then
+    tcrun "$OTHER" "$W/cls" --json "$W/tc17.json" >/dev/null 2>&1
+    want "report records the JDK it ran on (17)"  "$(cat "$W/tc17.json")" '"toolchain": "jdk-17"'
+    dw="$(tcrun "$J21" diff "$W/tc21.json" "$W/tc17.json" 2>&1 >/dev/null)"
+    want    "diff across JDKs warns, with the remedy"   "$dw" 'recorded on jdk-17'
+    want    "the warning names the remedy"               "$dw" 'Re-run on jdk-17'
+    gw="$(tcrun "$J21" gains "$W/tc21.json" "$W/tc17.json" 2>&1 >/dev/null)"
+    want    "gains across JDKs warns"                    "$gw" 'recorded on jdk-17'
+    bw="$(CANDOR_BASELINE="$W/tc17.json" tcrun "$J21" "$W/cls" 2>&1)"; brc=$?
+    want    "baseline guard across JDKs warns"           "$bw" 'recorded on jdk-17'
+    if [ "$brc" -eq 0 ]; then echo "  ok   the warning does not change the guard exit ($brc)"; pass=$((pass+1)); else echo "  FAIL guard exit moved: $brc"; fail=$((fail+1)); fi
+  else echo "  skip no JDK 17 on this machine (cross-JDK arms)"; fi
+  dq="$(tcrun "$J21" diff "$W/tc21.json" "$W/tc21.json" 2>&1)"
+  wantnot "same JDK is silent"                         "$dq" 'recorded on'
+  python3 - "$W/tc21.json" "$W/tcold.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); d['candor'].pop('toolchain'); json.dump(d,open(sys.argv[2],'w'))
+PY
+  oq="$(tcrun "$J21" diff "$W/tc21.json" "$W/tcold.json" 2>&1)"
+  wantnot "a report with no recorded runtime does not warn" "$oq" 'recorded on'
+else echo "  skip no JDK 21 at $J21"; fi
+
 echo "== baseline guard (AS-EFF-005) =="
 # a baseline where reads had no Fs → guard must flag the gain
 python3 - "$W/r.json" "$W/base.json" <<'PY'

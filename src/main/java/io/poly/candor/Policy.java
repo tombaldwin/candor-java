@@ -150,6 +150,8 @@ final class Policy {
         // adopt workflow sets CANDOR_BASELINE unconditionally by contract).
         String baseVersion = baselineVersion(path);
         String current = ReportWriter.provenance()[0];
+        // Same build, different JDK: warn only (never changes the verdict or exit code below).
+        Query.warnToolchainMismatch(ReportWriter.provenance()[1], Query.reportToolchain(path), "the baseline " + path);
         if (baseVersion == null) {
             System.err.println("candor-java: the baseline " + path + " has no provenance header (a legacy/"
                     + "bare-array report) — a baseline is comparable only to its producing build (§2.1)."

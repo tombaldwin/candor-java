@@ -5075,6 +5075,43 @@ public final class Query {
         }
     }
 
+    /** The envelope's {@code candor.toolchain} (e.g. {@code jdk-21}), null when absent/unreadable. */
+    static String reportToolchain(String path) {
+        try {
+            JsonElement root = JsonParser.parseString(Files.readString(Path.of(path)));
+            if (!root.isJsonObject()) return null;
+            JsonObject obj = root.getAsJsonObject();
+            if (!obj.has("candor") || !obj.get("candor").isJsonObject()) return null;
+            JsonElement v = obj.getAsJsonObject("candor").get("toolchain");
+            return v != null && v.isJsonPrimitive() ? v.getAsString() : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** The major JDK of a {@code jdk-N} toolchain string; -1 for anything else (absent, a pre-record
+     *  {@code jvm-…} value, another engine's channel) — those are NOT compared, so they never warn. */
+    static int jdkMajor(String toolchain) {
+        if (toolchain == null || !toolchain.startsWith("jdk-")) return -1;
+        try {
+            return Integer.parseInt(toolchain.substring(4));
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    /** WARN (stderr only; never a verdict, a JSON field or an exit code) when two reports were produced on
+     *  different major JDKs: the class library the analysis reads differs, so the delta between them can be
+     *  the RUNTIME, not the code. Silent when either side records no comparable runtime. */
+    static boolean warnToolchainMismatch(String curTc, String baseTc, String what) {
+        int a = jdkMajor(curTc), b = jdkMajor(baseTc);
+        if (a < 0 || b < 0 || a == b) return false;
+        System.err.println("candor-java: ⚠ " + what + " was recorded on " + baseTc + " but this report is from "
+                + curTc + " — the JDK's class library changes what candor sees, so differences may be the JDK,"
+                + " not your code. Re-run on " + baseTc + " (JAVA_HOME), or re-record the baseline on " + curTc + ".");
+        return true;
+    }
+
     /** §2.1 stale-baseline DISCLOSURE for the read-only comparison queries (`diff`/`gains`): a baseline is
      *  comparable only to reports from its own producing build, so a version mismatch means the delta may
      *  be the ENGINE reclassifying (a κ batch unmasking effects), not the code changing. Unlike the
@@ -5127,6 +5164,7 @@ public final class Query {
             return 2;
         }
         String engineV = reportVersion(curPath), baseV = reportVersion(basePath);
+        warnToolchainMismatch(reportToolchain(curPath), reportToolchain(basePath), "the baseline " + basePath);
         boolean versionMismatch = discloseVersionMismatch(engineV, baseV,
                 "some changes may be the engine reclassifying, not your code. Treat an engine swap as"
                 + " baseline-invalidating: review, then regenerate the baseline.");
@@ -5254,6 +5292,7 @@ public final class Query {
             return 2;
         }
         String engineV = reportVersion(curPath), baseV = reportVersion(basePath);
+        warnToolchainMismatch(reportToolchain(curPath), reportToolchain(basePath), "the baseline " + basePath);
         discloseVersionMismatch(engineV, baseV,
                 "a \"gained capability\" may be the engine reclassifying, not the dependency changing."
                 + " Regenerate both reports with one build to compare releases.");

@@ -18,6 +18,12 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   list whose `size()` writes was charged its pure `get`); it now takes every member. ADDS concrete edges only. The function that calls `iterator()`/`values()`/… is charged what the returned view can run (over-approximate in time: iterating `values()` is charged an overridden `clear`). Corpus: 1,727 rows newly concrete, 0 removed. Residual:
   a `java.util`-typed receiver with no caller-visible allocation (a field, a call result) still takes no re-entry —
   the call-target round 2 ruling on CHA over a JDK owner.
+  **Measured cost, against published 0.41.1 over 452 corpus jars:** 1,727 rows newly concrete, 0 removed, no gate 1→0. An
+  independent audit found every one of the 26 re-entry roots genuine, but about 1,409 of those rows (≈80%) receive the new `Log`
+  only through the pre-existing class-hierarchy fan-out at `List`/`Collection.iterator()` (SOUNDNESS R1461), which reaches a
+  library's sole `iterator()` declarer whatever the receiver's element type. 1,408 of them already carried `Unknown`, so only a bare
+  `deny Log` (without `Unknown`) can newly fail; 2 such false failures were measured. Narrowing that fan-out is R1461's own work.
+- **The report records the JDK it ran on, and the baseline guard, `diff` and `gains` warn when two reports come from different major JDKs.** `candor.toolchain` used to be the JDK the engine was BUILT with (always `jdk-21`), so a scan on 17 claimed 21; it is now the running JDK (`jdk-17`, `jdk-21`; SPEC 2.1 already names this field). A mismatch prints one stderr line with the remedy (use the JDK the baseline was recorded on, or re-record it). It is a warning only: no verdict, JSON field or exit code moves. A report with no `jdk-N` toolchain (older or another engine) is not compared and does not warn. Output on a matching JDK is byte-identical.
 
 ## [0.41.1] — 2026-11-04
 

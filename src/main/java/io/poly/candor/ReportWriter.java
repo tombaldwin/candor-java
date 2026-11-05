@@ -1327,13 +1327,15 @@ final class ReportWriter {
      *  tree. Falls back to "unknown" / the running JDK when the resource is absent. */
     static String[] provenance() {
         String version = "unknown";
-        String toolchain = "jvm-" + System.getProperty("java.version", "?");
+        // The RUNTIME the report was produced on (SPEC §2.1 `toolchain`: "jdk-21"). Not the JDK the engine was
+        // BUILT with: the jar is `--release 17` bytecode that runs on any 17+, and the output depends on the
+        // running JDK's class library, so a report made on 17 must not claim 21.
+        String toolchain = "jdk-" + Runtime.version().feature();
         try (var in = Candor.class.getResourceAsStream("/candor/build-info.properties")) {
             if (in != null) {
                 Properties p = new Properties();
                 p.load(in);
                 version = p.getProperty("version", version);
-                toolchain = p.getProperty("toolchain", toolchain);
             }
         } catch (IOException ignored) {
             // best-effort provenance: a missing/unreadable build-info resource falls back to the defaults

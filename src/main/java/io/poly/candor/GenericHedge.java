@@ -40,7 +40,9 @@ import static io.poly.candor.AnalysisState.ctx;
  *  executed raw override (H1) or an unchecked upcast (H2, no bytecode trace at all) makes the incompatible implementor
  *  the one that runs. So the edge is not dropped, it is DEMOTED: where the class files PROVE the receiver's declared
  *  type argument and the implementor's are both resolved classes and neither is a subtype of the other, the edge is
- *  replaced by a disclosed {@code Unknown[dispatch:<owner>.<member>]} on the same site. The reason is true: the engine
+ *  replaced by a disclosed {@code Unknown[dispatch:<owner>.<member>]} on the same site — decided after the fixpoint
+ *  ({@code ArgContract#hedgeFloor}), where the demoted body carries a concrete effect the site lacks, any
+ *  {@code Unknown}, or an {@code invisible} package the site lacks; a body carrying none of them lost nothing. The reason is true: the engine
  *  cannot name the runtime class, and only heap pollution makes it this implementor.
  *
  *  <p>Everything this reader cannot resolve keeps today's edge: a raw type, a missing {@code Signature}, a wildcard, a

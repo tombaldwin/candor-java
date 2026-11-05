@@ -7267,8 +7267,8 @@ public class Candor {
     }
 
     /** SOUNDNESS R1461 — the CHA edges of a JDK-owned dispatch, minus those {@link GenericHedge} proves
-     *  generic-incompatible with the receiver's declared type; each demoted edge becomes a disclosed
-     *  {@code Unknown[dispatch:<owner>.<member>]} on this site instead (a hedge, never a drop: heap pollution can make
+     *  generic-incompatible with the receiver's declared type; a demoted edge whose body carries anything this site
+     *  lacks becomes a disclosed {@code Unknown[dispatch:<owner>.<member>]} on this site instead, after the fixpoint (a hedge, never a drop: heap pollution can make
      *  the incompatible implementor the one that runs). Only where nothing else decides the call ({@code effect},
      *  a Spring-typed receiver) — those keep every edge. */
     static List<String> hedgeIncompatible(AnalysisContext ctx, MethodScan s, MethodInsnNode min, String owner,
@@ -7277,9 +7277,10 @@ public class Candor {
         Set<String> gone = reentry ? GenericHedge.demotedReentry(s.cls, s.mn, min, chaOwner, targets)
                 : GenericHedge.demoted(s.cls, s.mn, min, chaOwner, targets);
         if (gone.isEmpty()) return targets;
-        s.dir.add(Effect.UNKNOWN);
-        ctx.unknownWhy.computeIfAbsent(s.id, k -> new TreeSet<>())
-                .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
+        // decided after the fixpoint (ArgContract#hedgeFloor): a demoted body that carries nothing the caller lacks
+        // loses nothing, and needs no disclosure
+        TreeSet<String> rec = ctx.r1461Hedged.computeIfAbsent(s.id, k -> new TreeSet<>());
+        for (String g : gone) rec.add(min.owner + "\t" + min.name + "\t" + g);
         List<String> kept = new ArrayList<>(targets);
         kept.removeAll(gone);
         return kept;

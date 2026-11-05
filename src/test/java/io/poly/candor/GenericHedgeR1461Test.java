@@ -34,12 +34,12 @@ class GenericHedgeR1461Test {
 
     static Map<String, String> src() {
         Map<String, String> m = new HashMap<>();
-        m.put("gh/E.java", "package gh;\nclass E { " + HIT + " }\n");
+        m.put("gh/E.java", "package gh;\nclass E { " + HIT + " static void env() { System.getenv(\"R1461\"); } }\n");
         m.put("gh/Span.java", "package gh;\npublic final class Span { }\n");
         m.put("gh/SpanIter.java", "package gh;\npublic class SpanIter implements java.util.Iterator<Span> {\n"
                 + " public boolean hasNext() { return false; } public Span next() { E.hit(); return new Span(); } }\n");
         m.put("gh/IntIter.java", "package gh;\npublic class IntIter implements java.util.Iterator<Integer> {\n"
-                + " public boolean hasNext() { return false; } public Integer next() { E.hit(); return 1; } }\n");
+                + " public boolean hasNext() { return false; } public Integer next() { E.env(); return 1; } }\n");
         // H1: a raw override — a List<Integer> whose iterator is the Span iterator
         m.put("gh/RawBag.java", "package gh;\n@SuppressWarnings({\"unchecked\",\"rawtypes\"})\n"
                 + "public class RawBag extends java.util.ArrayList<Integer> { public java.util.Iterator iterator() { return new SpanIter(); } }\n");
@@ -89,8 +89,10 @@ class GenericHedgeR1461Test {
                     assertTrue(e.contains(INT), arm + ": " + id + " — the compatible Iterator<Integer>.next keeps its edge, got " + e);
                     assertTrue(c.unknownWhy.getOrDefault(id, new TreeSet<>()).stream().anyMatch(w -> w.toString().equals(WHY)),
                             arm + ": " + id + " — the demoted edge is DISCLOSED on the same site, got " + c.unknownWhy.get(id));
-                    assertTrue(inf.get(id).contains(Effect.UNKNOWN) && inf.get(id).contains(Effect.FS),
-                            arm + ": " + id + " — Unknown from the hedge, Fs from the compatible IntIter — got " + inf.get(id));
+                    assertFalse(c.unknownWhy.getOrDefault(id, new TreeSet<>()).stream().anyMatch(w -> w.toString().equals("dispatch:java.util.Iterator.hasNext")),
+                            arm + ": " + id + " — SpanIter.hasNext is pure, so its demotion is not disclosed, got " + c.unknownWhy.get(id));
+                    assertTrue(inf.get(id).contains(Effect.UNKNOWN) && inf.get(id).contains(Effect.ENV) && !inf.get(id).contains(Effect.FS),
+                            arm + ": " + id + " — Unknown for the demoted SpanIter's Fs, Env from the compatible IntIter — got " + inf.get(id));
                 }
                 // COMPATIBLE: an Iterable<Span> keeps SpanIter.next — and demotes IntIter.next, the mirror pair
                 Set<String> sp = c.edges.getOrDefault("gh.Use.spans", Set.of());
@@ -111,6 +113,32 @@ class GenericHedgeR1461Test {
             } finally {
                 TestCompiler.rm(cls.getParent());
             }
+        }
+    }
+
+    /** The disclosure is decided after the fixpoint: a demoted body that carries NOTHING the site lacks needs none
+     *  (SpanIter.hasNext is pure), and a body whose only channel is {@code invisible} — a call into a package this scan
+     *  cannot analyse — DOES, or the chained consumer would lose the one thing telling it to look. */
+    @Test
+    void theDisclosureIsDecidedByWhatTheDemotedBodyCarries() throws Exception {
+        Path app = TestCompiler.compileApp(
+                Map.of("com/obscure/lib/Widget.java", "package com.obscure.lib; public class Widget { public static void doStuff(){} }"),
+                Map.of("gi/Span.java", "package gi;\npublic final class Span { }\n",
+                        "gi/BlindIter.java", "package gi;\npublic class BlindIter implements java.util.Iterator<Span> {\n"
+                                + " public boolean hasNext() { return false; } public Span next() { com.obscure.lib.Widget.doStuff(); return new Span(); } }\n",
+                        "gi/Use.java", "package gi;\nimport java.util.*;\npublic class Use {\n"
+                                + " public static int ints(Collection<Integer> c) { int n = 0; for (Integer x : c) n++; return n; }\n}\n"));
+        try {
+            Candor.runScan(app);
+            AnalysisContext c = AnalysisState.ctx();
+            TreeSet<?> why = c.unknownWhy.getOrDefault("gi.Use.ints", new TreeSet<>());
+            assertTrue(why.stream().anyMatch(w -> w.toString().equals("dispatch:java.util.Iterator.next")),
+                    "BlindIter.next carries only `invisible`: its demoted edge must still be disclosed, got " + why);
+            assertFalse(why.stream().anyMatch(w -> w.toString().equals("dispatch:java.util.Iterator.hasNext")),
+                    "BlindIter.hasNext is pure: demoting it loses nothing and discloses nothing, got " + why);
+            assertFalse(c.edges.getOrDefault("gi.Use.ints", Set.of()).contains("gi.BlindIter.next"));
+        } finally {
+            TestCompiler.rm(app.getParent());
         }
     }
 

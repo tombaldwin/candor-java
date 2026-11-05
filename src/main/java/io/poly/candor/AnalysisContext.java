@@ -281,6 +281,10 @@ final class AnalysisContext {
     /** SOUNDNESS R1201 (floor S4; open as R1205) — fn -> {@code "key\towner\tS4"}: a direct equals/hashCode dispatch past the CHA
      *  fan-out bound, dropped as §4 permits; disclosed after the fixpoint where an override in reach is effectful. */
     final Map<String, TreeSet<String>> argContractFloor = new HashMap<>();
+    /** SOUNDNESS R1461 — fn -> {@code "owner\tname\tbody"}: a CHA edge {@link GenericHedge} demoted at this fn's dispatch
+     *  site; disclosed as {@code Unknown[dispatch:owner.name]} after the fixpoint where the body carries something the
+     *  caller lacks (an effect, an Unknown, an invisible package) — {@link ArgContract#hedgeFloor}. */
+    final Map<String, TreeSet<String>> r1461Hedged = new HashMap<>();
     /** SOUNDNESS R1205/R1217/R1204 — fn -> {@code "mname\tmdesc\tinsn\tstackIdx\towner\tname\tdesc\tkind"}: an
      *  Object-protocol dispatch (kind D, or P on the method's own parameter) or a JDK string sink's toString over an
      *  {@code Object} operand (kind S), decided after the analyze loop by {@link ExactTypes#resolveSites} from the

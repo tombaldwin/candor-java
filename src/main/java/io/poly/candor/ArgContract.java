@@ -499,7 +499,7 @@ final class ArgContract {
      *  re-runs the fixpoint so it propagates). */
     static boolean postFixpoint(Map<String, EffectSet> fx) {
         AnalysisContext c = ctx();
-        boolean added = false;
+        boolean added = hedgeFloor(c, fx);
         for (String[] w : WIDE_SITES.get()) {
             String caller = w[0], key = w[1], t = w[2];
             int paren = key.indexOf('('), dot = key.lastIndexOf('.', paren);
@@ -655,7 +655,8 @@ final class ArgContract {
      *  second site is only decidable once the first has propagated. Monotone (a disclosure is never withdrawn), so the
      *  driver's loop ends. False once nothing new is disclosed; the sites are dropped then. */
     static boolean floorAgain(Map<String, EffectSet> fx) {
-        boolean added = R1303_UNKNOWN && objectFloor(ctx(), fx);
+        boolean added = hedgeFloor(ctx(), fx);
+        added |= R1303_UNKNOWN && objectFloor(ctx(), fx);
         // SOUNDNESS R1337 — a JDK-typed parameter cause's WIDE site, re-decided on the same terms: a candidate whose
         // Unknown came from a floor disclosure (MapField.toString's, reached through kafka QuotaViolationException
         // .toString) is only visible after the fixpoint that disclosure fed
@@ -673,6 +674,35 @@ final class ArgContract {
         return added;
     }
     private static final ThreadLocal<List<String[]>> R1337_AGAIN = ThreadLocal.withInitial(ArrayList::new);
+
+    /** SOUNDNESS R1461 — the generic-incompatibility hedge's disclosure: each CHA edge {@link GenericHedge} demoted is
+     *  disclosed as {@code Unknown[dispatch:owner.name]} on its site where the demoted body carries a concrete effect the
+     *  site does not already carry, any {@code Unknown}, or an {@code invisible} package the site lacks (the channel a
+     *  chained consumer reads; dropping it silently is the R764 shape). A body that carries none of them contributed
+     *  nothing through the edge, so nothing is lost and nothing is disclosed. Re-decided with the floors, since one
+     *  disclosure can make another demoted body newly carry {@code Unknown}. Monotone. */
+    static boolean hedgeFloor(AnalysisContext c, Map<String, EffectSet> fx) {
+        if (c.r1461Hedged.isEmpty()) return false;
+        Map<String, TreeSet<String>> blind = null;
+        boolean added = false;
+        for (var e : c.r1461Hedged.entrySet()) {
+            String caller = e.getKey();
+            for (String x : e.getValue()) {
+                String[] a = x.split("\t", 3);
+                // an Unknown body discloses even where the caller already carries Unknown: the body's own reasons stop
+                // propagating with the edge, and the site's reason is what a reason-scoped `deny Unknown[…]` still reads
+                EffectSet be = fx.get(a[2]);
+                boolean hit = newConcrete(fx, a[2], caller) || (be != null && be.contains(Effect.UNKNOWN));
+                if (!hit) {
+                    if (blind == null) blind = Literals.literalFixpoint(c.blindDirect);
+                    TreeSet<String> bb = blind.get(a[2]);
+                    hit = bb != null && !blind.getOrDefault(caller, new TreeSet<>()).containsAll(bb);
+                }
+                if (hit) added |= disclose(c, caller, a[0], a[1], "R1461U", a[0], a[2]);
+            }
+        }
+        return added;
+    }
 
     /** {@code CANDOR_R1303_UNKNOWN=0} restores the concrete-only floor — a measurement arm, not a setting. */
     static final boolean R1303_UNKNOWN = !"0".equals(System.getenv("CANDOR_R1303_UNKNOWN"));

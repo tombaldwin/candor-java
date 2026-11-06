@@ -142,6 +142,27 @@ class GenericHedgeR1461Test {
         }
     }
 
+    /** SCOPE (Tom's ruling, 2026-11-05): the hedge covers the JDK COLLECTION owners only. A {@code Supplier<Integer>}
+     *  receiver over the program's only {@code Supplier<String>} is the same argument one package over, and it keeps
+     *  its edge unless the {@code CANDOR_R1461_WIDE} measurement arm is on. */
+    @Test
+    void aNonCollectionOwnerKeepsItsEdge() throws Exception {
+        Path cls = TestCompiler.compile(new HashMap<>(Map.of(
+                "gs/E.java", "package gs;\nclass E { " + HIT + " }\n",
+                "gs/StrSup.java", "package gs;\npublic class StrSup implements java.util.function.Supplier<String> {\n"
+                        + " public String get() { E.hit(); return \"x\"; } }\n",
+                "gs/Use.java", "package gs;\npublic class Use {\n"
+                        + " public static Object sup(java.util.function.Supplier<Integer> s) { return s.get(); }\n}\n")));
+        try {
+            Candor.runScan(cls);
+            AnalysisContext c = AnalysisState.ctx();
+            assertEquals(!GenericHedge.WIDE, c.edges.getOrDefault("gs.Use.sup", Set.of()).contains("gs.StrSup.get"),
+                    "java.util.function is outside the ruled scope: the edge is kept by default, got " + c.edges.get("gs.Use.sup"));
+        } finally {
+            TestCompiler.rm(cls.getParent());
+        }
+    }
+
     /** The signature reader itself, over JDK class files: the binding chain {@code Map<String,Integer>.values()} →
      *  {@code Collection<Integer>} → {@code Iterator<Integer>}, and a raw use binding nothing. */
     @Test

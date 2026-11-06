@@ -39,7 +39,7 @@ class JdkIndexPinTest {
 
     static final Path ROOT = Path.of(System.getProperty("user.dir"));
     static final Path DIR = ROOT.resolve("soundness/jdk_index");
-    static final List<String> INDEXES = List.of("jdk-supertypes.idx", "jdk-sams.idx", "jdk-hof-invokes.idx", "jdk-functional.idx", "jdk-sites.idx");
+    static final List<String> INDEXES = List.of("jdk-supertypes.idx", "jdk-sams.idx", "jdk-hof-invokes.idx", "jdk-functional.idx", "jdk-sites.idx", "jdk-generics.idx");
 
     static String sha(byte[] b) throws Exception {
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(b));

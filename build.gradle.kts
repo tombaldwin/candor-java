@@ -102,6 +102,9 @@ graalvmNative {
             buildArgs.add("-H:IncludeResources=candor/jdk-hof-invokes\\.idx\\.gz")
             buildArgs.add("-H:IncludeResources=candor/jdk-functional\\.idx\\.gz")   // SOUNDNESS R1092
             buildArgs.add("-H:IncludeResources=candor/jdk-sites\\.idx\\.gz")        // call-target round 2: the JDK site table
+            // SOUNDNESS R1461 — the JDK collection types' generic signatures, read by GenericHedge on BOTH artifacts.
+            // Left out, the native binary would keep every generic-incompatible edge the jar discloses.
+            buildArgs.add("-H:IncludeResources=candor/jdk-generics\\.idx\\.gz")
             // SOUNDNESS R492/R727 — the GENERATED framework member -> effect table (FrameworkReach). Missing from
             // the image, the native binary would read every member it charges as silently pure again.
             buildArgs.add("-H:IncludeResources=candor/framework-reach\\.tsv")

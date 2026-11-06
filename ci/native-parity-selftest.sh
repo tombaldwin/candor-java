@@ -58,9 +58,9 @@ java -Dcandor.nativeparity.witness="$WITNESS" \
      -cp "$FIXTURE" io.poly.candor.nativeparity.Drive || fail "the fixture's Drive.main did not run"
 [ -f "$WITNESS" ] || fail "Drive.main ran but wrote no witness file — the fixture performs no effect"
 N_WRITES=$(wc -c < "$WITNESS" | tr -d ' ')
-[ "$N_WRITES" = "5" ] || fail "expected 5 witness appends (one per arm), got $N_WRITES — the fixture is \
+[ "$N_WRITES" = "6" ] || fail "expected 6 witness appends (one per arm), got $N_WRITES — the fixture is \
 not the program the marker rows describe"
-echo "native-parity-selftest [1] executed: 5/5 fixture arms really performed their effect"
+echo "native-parity-selftest [1] executed: 6/6 fixture arms really performed their effect"
 
 # ---------------------------------------------------------------------------------------------------
 # [2] The baseline: the whole jar over the fixture.

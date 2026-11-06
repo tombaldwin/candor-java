@@ -59,6 +59,12 @@ final class GenericHedge {
     static final boolean OFF = "off".equals(System.getProperty("candor.r1461"))
             || "off".equals(System.getenv("CANDOR_R1461"));
     static final boolean DEBUG = System.getenv("CANDOR_R1461_DEBUG") != null;
+    /** A MEASUREMENT ARM, off by default and not a setting: {@code CANDOR_R1461_WIDE=1} (or {@code -Dcandor.r1461.wide=on})
+     *  extends the hedge from the collection owners to EVERY generic JDK owner ({@code java.util.function},
+     *  {@code java.util.concurrent}, …) and reads those owners' signatures off the host JDK's class files — so it is
+     *  jar-only and host-dependent, which is one more reason it does not ship. */
+    static final boolean WIDE = "on".equals(System.getProperty("candor.r1461.wide"))
+            || "1".equals(System.getenv("CANDOR_R1461_WIDE"));
     private static final int MAX_DEPTH = 8;
 
     // ---- the generic type model -------------------------------------------------------------------------------
@@ -190,7 +196,74 @@ final class GenericHedge {
         ClassNode cn = ctx().byName.get(internal);
         if (cn != null) return fromNode(cn);
         if (!JdkSites.isJdk(internal)) return null;   // a dependency: not on this classpath, so unresolved
-        return JDK.computeIfAbsent(internal, GenericHedge::readJdk).orElse(null);
+        if (WIDE) return JDK.computeIfAbsent(internal, GenericHedge::readJdk).orElse(null);
+        return INDEXED.computeIfAbsent(internal, GenericHedge::fromIndex).orElse(null);
+    }
+
+    /** Tom's ruling (2026-11-05) covers the R1461 shape: the JDK COLLECTION owners — {@code java.lang.Iterable} and the
+     *  {@code java.util} types whose supertypes reach {@code Iterable}, {@code Map}, {@code Iterator} or
+     *  {@code Map.Entry} (Collection/List/Set/Queue/Map/Iterator/ListIterator/Map.Entry and the JDK classes
+     *  implementing them). The generics index carries a class line for exactly that scope. */
+    static boolean collectionOwner(String owner) {
+        if (WIDE) return true;
+        if (!owner.equals("java/lang/Iterable") && !(owner.startsWith("java/util/") && owner.indexOf('/', 10) < 0)) return false;
+        return JdkGenerics.CLASS.containsKey(owner);
+    }
+
+    private static final Map<String, Optional<Info>> INDEXED = new ConcurrentHashMap<>();
+
+    /** A JDK class's generic facts from the PINNED {@code jdk-generics.idx.gz}, on the jar and the native image alike (a
+     *  native image has no JDK class files, so reading them off the host is what made the two diverge); its raw
+     *  supertypes from {@link Cha#externalSupers}. A class neither knows is unresolved. */
+    private static Optional<Info> fromIndex(String internal) {
+        String sig = JdkGenerics.CLASS.get(internal);
+        // raw supertypes through the engine's one JDK-hierarchy chokepoint: ClassReader on the jar, the pinned
+        // jdk-supertypes index in a native image — the route every other CHA question already takes (native == jar)
+        List<String> raw = Cha.externalSupers(internal);
+        if (sig == null && raw.isEmpty() && !internal.equals("java/lang/Object")) return Optional.empty();
+        ClassSig cs = sig == null || sig.equals("-") ? null : parseOr(() -> parseClass(sig));
+        List<G> supers = new ArrayList<>();
+        List<String> tp = List.of();
+        if (cs != null) { supers.addAll(cs.supers); tp = cs.typeParams; }
+        else for (String r : raw) supers.add(G.cls(r, List.of()));
+        Map<String, String> ms = new HashMap<>(), fs = new HashMap<>(), fd = new HashMap<>();
+        Set<String> methods = new HashSet<>();
+        for (var e : JdkGenerics.METHODS.getOrDefault(internal, Map.of()).entrySet()) {
+            methods.add(e.getKey());
+            if (!e.getValue().equals("-")) ms.put(e.getKey(), e.getValue());
+        }
+        for (var e : JdkGenerics.FIELDS.getOrDefault(internal, Map.of()).entrySet()) {
+            fd.put(e.getKey(), e.getValue()[0]);
+            if (!e.getValue()[1].equals("-")) fs.put(e.getKey(), e.getValue()[1]);
+        }
+        return Optional.of(new Info(internal, tp, supers, ms, fs, fd, methods));
+    }
+
+    /** The checked-in {@code candor/jdk-generics.idx.gz} (soundness/jdk_index/derive.sh). Missing or unreadable, every
+     *  map is empty and every JDK question is unresolved — the hedge then never fires and every edge is kept. */
+    static final class JdkGenerics {
+        static final Map<String, String> CLASS = new HashMap<>();
+        static final Map<String, Map<String, String>> METHODS = new HashMap<>();
+        static final Map<String, Map<String, String[]>> FIELDS = new HashMap<>();
+        static {
+            try (var in = GenericHedge.class.getResourceAsStream("/candor/jdk-generics.idx.gz")) {
+                if (in != null) try (var br = new java.io.BufferedReader(new java.io.InputStreamReader(
+                        new java.util.zip.GZIPInputStream(in), java.nio.charset.StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        String[] a = line.split("\t");
+                        switch (a[0]) {
+                            case "C" -> { if (a.length == 3) CLASS.put(a[1], a[2]); }
+                            case "M" -> { if (a.length == 4) METHODS.computeIfAbsent(a[1], k -> new HashMap<>()).put(a[2], a[3]); }
+                            case "F" -> { if (a.length == 5) FIELDS.computeIfAbsent(a[1], k -> new HashMap<>()).put(a[2], new String[] {a[3], a[4]}); }
+                            default -> { }
+                        }
+                    }
+                }
+            } catch (java.io.IOException | RuntimeException e) {
+                CLASS.clear(); METHODS.clear(); FIELDS.clear();
+            }
+        }
     }
 
     private static Info fromNode(ClassNode cn) {
@@ -520,7 +593,7 @@ final class GenericHedge {
 
     private static Set<String> decide(ClassNode cn, MethodNode mn, MethodInsnNode min, String chaOwner,
             List<String> targets, boolean reentry) {
-        if (OFF || targets.isEmpty() || !JdkSites.isJdk(chaOwner) || cn == null) return Set.of();
+        if (OFF || targets.isEmpty() || !JdkSites.isJdk(chaOwner) || cn == null || !collectionOwner(chaOwner)) return Set.of();
         Info oi = info(chaOwner);
         if (oi == null || oi.typeParams.isEmpty()) return Set.of();   // a non-generic owner has nothing to compare
         Frame<SourceValue>[] fr = Candor.srcFramesOf(mn);

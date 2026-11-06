@@ -68,6 +68,12 @@ MARKERS = [
     # LIVE — necessary for the native leg to be able to differ, not sufficient. The teeth are the native
     # leg's own marker check plus `./gradlew verifyNativeImageResources`, which catches a dropped
     # `-H:IncludeResources` line with no GraalVM at all.
+    # SOUNDNESS R1461. `Collection<Integer>` iterated over a program whose only project Iterator is an
+    # `Iterator<String>`: the generic signatures that prove the two incompatible come ONLY from the bundled
+    # index (the jar reads no JDK class file for them, so the jar leg CAN strip it), and without it the edge
+    # is kept and the row carries `Fs` with no `dispatch:` reason.
+    ("candor/jdk-generics.idx.gz", f"{PKG}.GenArm.genArm",
+     "Unknown", "dispatch:java.util.Iterator.next"),
     ("candor/jdk-supertypes.idx.gz", f"{PKG}.SuperArm.superWalkList", "Fs", None),
     ("candor/jdk-supertypes.idx.gz", f"{PKG}.SuperArm.superWalkMap", "Fs", None),
 ]

@@ -58,7 +58,7 @@ public final class JdkIndexGen {
     private JdkIndexGen() {}
 
     static final String SUPERS = "jdk-supertypes.idx", SAMS = "jdk-sams.idx", HOF = "jdk-hof-invokes.idx",
-            FUNCTIONAL = "jdk-functional.idx", SITES = "jdk-sites.idx";
+            FUNCTIONAL = "jdk-functional.idx", SITES = "jdk-sites.idx", GENERICS = "jdk-generics.idx";
     static final Set<String> OBJECT_METHODS = Set.of("equals(Ljava/lang/Object;)Z", "hashCode()I", "toString()Ljava/lang/String;");
     static final int IDENTITY_BODY_LIMIT = 24;
 
@@ -72,6 +72,7 @@ public final class JdkIndexGen {
             Files.writeString(out.resolve(HOF), im.hofText(), StandardCharsets.UTF_8);
             Files.writeString(out.resolve(FUNCTIONAL), im.functionalText(), StandardCharsets.UTF_8);
             Files.writeString(out.resolve(SITES), im.sitesText(), StandardCharsets.UTF_8);
+            Files.writeString(out.resolve(GENERICS), im.genericsText(), StandardCharsets.UTF_8);
             return;
         }
         if (a.length >= 3 && a[0].equals("--union")) {
@@ -85,6 +86,7 @@ public final class JdkIndexGen {
             writeGz(out.resolve(HOF + ".gz"), u.hofText());
             writeGz(out.resolve(FUNCTIONAL + ".gz"), u.functionalText());
             writeGz(out.resolve(SITES + ".gz"), u.sitesText());
+            writeGz(out.resolve(GENERICS + ".gz"), u.genericsText());
             System.err.printf("jdk-index: %d images -> %d supertype lines, %d SAMs, %d HOF keys, %d site lines%n",
                     ims.size(), u.supers.size(), u.sams.size(), u.hof.size(), u.sites.size());
             return;
@@ -105,6 +107,7 @@ public final class JdkIndexGen {
         final TreeMap<String, TreeSet<Integer>> hof = new TreeMap<>();  // "name desc" -> invoked arg indexes
         final TreeSet<String> functional = new TreeSet<>();             // interfaces annotated @FunctionalInterface
         final TreeMap<String, TreeSet<String>> sites = new TreeMap<>(); // call-target round 2: JdkSiteGen's site table
+        final TreeMap<String, String> generics = new TreeMap<>();      // SOUNDNESS R1461: key -> signature or "-"
         Image(String home, int feature) { this.home = home; this.feature = feature; }
 
         String supersText() {
@@ -121,6 +124,13 @@ public final class JdkIndexGen {
         String sitesText() {
             StringBuilder sb = new StringBuilder();
             for (var e : sites.entrySet()) sb.append(e.getKey()).append('\t').append(String.join("\t", e.getValue())).append('\n');
+            return sb.toString();
+        }
+        /** SOUNDNESS R1461 — {@code C\tclass\tsig}, {@code M\tclass\tname+desc\tsig}, {@code F\tclass\tname\tdesc\tsig};
+         *  sig is {@code -} where the member has no Signature attribute (raw). */
+        String genericsText() {
+            StringBuilder sb = new StringBuilder();
+            for (var e : generics.entrySet()) sb.append(e.getKey()).append('\t').append(e.getValue()).append('\n');
             return sb.toString();
         }
         String functionalText() {
@@ -169,6 +179,8 @@ public final class JdkIndexGen {
             u.functional.addAll(im.functional);
             // a site fact from ANY pinned image is kept (a missing hook fails toward silence); guard sets re-pruned
             for (var e : im.sites.entrySet()) u.sites.computeIfAbsent(e.getKey(), k -> new TreeSet<>()).addAll(e.getValue());
+            // R1461: a member present in any image is kept; where images disagree on its signature, the newest wins
+            u.generics.putAll(im.generics);
         }
         System.err.println("jdk-index: " + superConflicts + " class(es) whose superclass differs between images (newest kept)");
         for (TreeSet<String> hs : u.sites.values()) JdkSiteGen.prune(hs);
@@ -207,6 +219,7 @@ public final class JdkIndexGen {
             sams(paths, im);
             hof(paths, im);
             im.sites.putAll(JdkSiteGen.derive(paths));
+            generics(paths, im);
         }
         return im;
     }
@@ -222,6 +235,57 @@ public final class JdkIndexGen {
             s.addAll(List.of(cr.getInterfaces()));
             if (!s.isEmpty()) im.supers.put(cr.getClassName(), s);
         }
+    }
+
+    /** SOUNDNESS R1461 — the generic signatures the engine's {@code GenericHedge} reads, so the jar and the native image
+     *  answer from the same pinned facts (a native image has no JDK class files). The COLLECTION SCOPE is every JDK class
+     *  whose supertype closure reaches {@code Iterable}, {@code Map}, {@code Iterator} or {@code Map.Entry}: each gets its
+     *  class signature; and every public/protected, non-synthetic method or field of ANY JDK class whose declared
+     *  (erased) type is in that scope gets its signature, so a call's generic return ({@code Map.values()},
+     *  {@code System.getenv()}) can be bound. Nothing else is needed to decide a collection-owned dispatch. */
+    static final List<String> GENERIC_ROOTS = List.of("java/lang/Iterable", "java/util/Map", "java/util/Iterator",
+            "java/util/Map$Entry");
+
+    static void generics(List<Path> paths, Image im) {
+        Set<String> scope = new HashSet<>();
+        for (String c : im.supers.keySet()) if (reaches(im.supers, c)) scope.add(c);
+        scope.addAll(GENERIC_ROOTS);
+        for (Path p : paths) {
+            ClassReader cr;
+            try { cr = new ClassReader(Files.readAllBytes(p)); } catch (Exception e) { continue; }
+            String cname = cr.getClassName();
+            cr.accept(new ClassVisitor(Opcodes.ASM9) {
+                @Override public void visit(int v, int acc, String n, String sig, String sup, String[] itfs) {
+                    if (scope.contains(n)) im.generics.put("C\t" + n, sig == null ? "-" : sig);
+                }
+                @Override public MethodVisitor visitMethod(int acc, String n, String d, String sig, String[] ex) {
+                    if ((acc & (Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED)) == 0 || (acc & Opcodes.ACC_SYNTHETIC) != 0) return null;
+                    Type r = Type.getReturnType(d);
+                    if (r.getSort() == Type.OBJECT && scope.contains(r.getInternalName()))
+                        im.generics.put("M\t" + cname + "\t" + n + d, sig == null ? "-" : sig);
+                    return null;
+                }
+                @Override public org.objectweb.asm.FieldVisitor visitField(int acc, String n, String d, String sig, Object v) {
+                    if ((acc & (Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED)) == 0 || (acc & Opcodes.ACC_SYNTHETIC) != 0) return null;
+                    Type t = Type.getType(d);
+                    if (t.getSort() == Type.OBJECT && scope.contains(t.getInternalName()))
+                        im.generics.put("F\t" + cname + "\t" + n + "\t" + d, sig == null ? "-" : sig);
+                    return null;
+                }
+            }, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+        }
+    }
+
+    static boolean reaches(Map<String, List<String>> supers, String c) {
+        Deque<String> work = new ArrayDeque<>(List.of(c));
+        Set<String> seen = new HashSet<>();
+        while (!work.isEmpty()) {
+            String x = work.poll();
+            if (!seen.add(x)) continue;
+            if (GENERIC_ROOTS.contains(x)) return true;
+            work.addAll(supers.getOrDefault(x, List.of()));
+        }
+        return false;
     }
 
     record M(String name, String desc, int access) {}

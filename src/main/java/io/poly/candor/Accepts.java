@@ -196,12 +196,14 @@ final class Accepts {
         List<Accept.Entry> entries;
         Map<Integer, List<Accept.Row>> direct;
         Set<String> twins;
+        Map<String, Set<String>> callers;
         Set<Integer> stale;
         try {
             g0 = gate(reports, vpath, pol);
             entries = new ArrayList<>(Accept.entries);
             direct = Accept.directSnapshot();
             twins = Accept.twinSnapshot();
+            callers = Accept.callersSnapshot();
             stale = Accept.staleLines();
         } finally {
             Accept.forceTwins = false;
@@ -464,7 +466,7 @@ final class Accepts {
                     + "`) kept UNJUDGED — this route cannot evaluate that rule, so nothing is known about the entry. Gate at scan time.");
         for (int L : ignored)
             System.err.println("candor accepts: line " + L + " is IGNORED by the gate and kept as written — repairing it is yours.");
-        printRefused(refused);
+        printRefused(refused, callers);
         System.err.println("candor accepts: nothing was written. To take the proposal: write it to ANOTHER path (not onto the policy — "
                 + "a shell redirect onto it empties it first), then `diff " + policyPath + " <that path>` and commit.");
         return 0;
@@ -477,7 +479,20 @@ final class Accepts {
     /** ⟨0.41.1⟩ Every violation the proposal leaves red because NO line could be written for it — with the reason and the remedy,
      *  so "after the proposal the gate exits 1 with N violation(s)" is never a number with no cause. Human channel only: the
      *  plan document is unchanged. Up to five names per reason, then a count. */
-    private static void printRefused(Map<String, TreeSet<String>> refused) {
+    private static void printRefused(Map<String, TreeSet<String>> refused, Map<String, Set<String>> callers) {
+        // a positional row no accept line can ever cover gets its own sentence (creating function, what works); the rest keep the generic one
+        TreeSet<String> pos = refused.get("positional");
+        if (pos != null) {
+            TreeSet<String> rest = new TreeSet<>(Query.BY_CODE_POINT);
+            TreeSet<String> notes = new TreeSet<>(Query.BY_CODE_POINT);
+            for (String f : pos) { String n = Accept.uncoverableNote(f, callers); if (n != null) notes.add(n); else rest.add(f); }
+            if (rest.isEmpty()) refused.remove("positional"); else refused.put("positional", rest);
+            int k = 0;
+            for (String n : notes) {
+                if (k++ == 5) { System.err.println("candor accepts: … and " + (notes.size() - 5) + " more violation(s) no `accept` line can cover."); break; }
+                System.err.println("candor accepts: no accept line is written for " + n);
+            }
+        }
         String[][] why = {
             {"positional", "keyed by POSITION (an anonymous class `Foo$1`, a lambda `lambda$…`), which an `accept` line cannot name — a renumbering would re-point it at a different unit",
                 "give it a NAME (extract the anonymous class to a named one, a lambda to a named method), re-scan, and run `accepts` again; or fix the violation"},

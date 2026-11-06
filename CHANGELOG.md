@@ -11,6 +11,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## [0.41.3] — 2026-11-06
 
+- **jbang catalog points at the 0.41.3 jar.**
+
 - **⚠ A dispatch over a JDK collection type no longer charges a project implementor whose type argument cannot match
   the receiver's; it discloses `Unknown[dispatch:<owner>.<member>]` on that site instead (SOUNDNESS R1461).**
   `for (Integer x : Collection<Integer>)` used to be charged the `Fs` of the program's only `Iterator<Span>`, because

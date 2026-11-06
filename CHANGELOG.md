@@ -45,7 +45,9 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   cover it. Text only: no verdict, exit code, report byte, `accepts` plan document or accept-matching changes (the
   `accepts --json` plan shape is unchanged). A lambda passed straight into a call, which the enclosing `accept`
   covers, gets no note, and a policy with no `accept` line prints nothing new. The old `accepts` positional wording
-  ("give it a NAME") is replaced for these rows.
+  ("give it a NAME") is replaced for these rows. A lambda red only because its creating function is not accepted now
+  gets the exact line to accept for that function (or, when the creator has no violation row of its own, the
+  extract-to-a-named-method remedy) instead of "give it a NAME".
 
 ## [0.41.3] — 2026-11-06
 

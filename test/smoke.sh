@@ -3911,6 +3911,13 @@ want    "lambda remedy: accepts names the creating function (anonymous class)"  
 want    "lambda remedy: accepts gives the remedy that works"                     "$LRA" 'Remedy: move its body into a NAMED method and accept that, or run it where it is created.'
 LRJ="$("$CJ" accepts --report "$W/lr/rep.json" --policy "$W/lr/none.pol" --adopt --because t --json 2>&1 >/dev/null)"
 want    "lambda remedy: accepts --json carries the same text on the human channel" "$LRJ" 'it is created in `lx.N.field`'
+# a lambda whose creator the nested rule climbs to, red only because that creator is not accepted: say so, spelled as the line must be
+want    "lambda remedy: a covered-by-creator lambda names the creator line to accept"   "$LRA" 'Accept the creator: `accept lx.N.pass Fs for deny Fs lx because …`.'
+wantnot "lambda remedy: …and is not told to give the lambda a NAME"                     "$LRA" 'give it a NAME'
+printf 'deny Fs lx.N.lambda\n' > "$W/lr/scope.pol"
+LRS="$("$CJ" accepts --report "$W/lr/rep.json" --policy "$W/lr/scope.pol" --adopt --because t 2>&1 >/dev/null)"
+want    "lambda remedy: a creator with no row of its own cannot be accepted — says so"  "$LRS" 'but that function has no violation row of its own under `deny Fs lx.N.lambda`'
+want    "lambda remedy: …and gives the extract remedy"                                  "$LRS" '`lx.N.lambda$pass$3`: it is created in `lx.N.pass`'
 
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

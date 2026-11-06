@@ -300,6 +300,16 @@ final class Accept {
         return out;
     }
 
+    /** ADVISORY ONLY. The units the nested-unit rule would climb to from a javac lambda: the enclosing-method candidates
+     *  that really edge it. Empty for anything else. */
+    static List<String> climbCreators(String fn, Map<String, Set<String>> callers) {
+        List<String> out = new ArrayList<>();
+        if (!LAMBDA.matcher(fn).matches()) return out;
+        Set<String> by = callers.getOrDefault(fn, Set.of());
+        for (String c : enclosingOf(fn, callers)) if (by.contains(c)) out.add(c);
+        return out;
+    }
+
     /** ADVISORY ONLY (no verdict reads it). A copy of this run's inverted call graph, for the {@code accepts} verb. */
     static Map<String, Set<String>> callersSnapshot() {
         Map<String, Set<String>> m = new HashMap<>();

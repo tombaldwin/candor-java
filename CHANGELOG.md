@@ -11,6 +11,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## [0.41.2] — 2026-11-05
 
+- **jbang catalog points at the 0.41.2 jar.**
+
 - **⚠ A for-each over a project `AbstractList` (or a project `AbstractMap`'s `keySet()`/`values()`) runs the project's
   overrides, and the report now says so (SOUNDNESS R1462).** `AbstractList.iterator()` returns an `Itr` whose `next()`
   calls the list's own `get(int)`; the JDK site table recorded only what the acquiring member's body runs, so it had no

@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.poly.candor.model.Effect;
 import io.poly.candor.model.EffectSet;
+import io.poly.candor.model.ReasonClass;
+import io.poly.candor.model.UnknownReason;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
@@ -139,6 +141,67 @@ class GenericHedgeR1461Test {
             assertFalse(c.edges.getOrDefault("gi.Use.ints", Set.of()).contains("gi.BlindIter.next"));
         } finally {
             TestCompiler.rm(app.getParent());
+        }
+    }
+
+    /** A HEDGE MUST NOT DELETE A DISCLOSURE (audit of ad3d625, item a): where the demoted body's Unknown came from
+     *  reflection, the site's disclosure carries that class too, so a reason-scoped {@code deny Unknown[reflect]} that
+     *  failed before the hedge still fails. Measured on the candidate without this: 1 -> 0. */
+    @Test
+    void theDisclosureCarriesTheDemotedBodysReasonClasses() throws Exception {
+        Path cls = TestCompiler.compile(new HashMap<>(Map.of(
+                "gr/Span.java", "package gr;\npublic final class Span { }\n",
+                "gr/SpanIter.java", "package gr;\npublic class SpanIter implements java.util.Iterator<Span> {\n"
+                        + " public boolean hasNext() { return false; }\n"
+                        + " public Span next() { try { Class.forName(System.nanoTime() > 0 ? \"a.B\" : \"c.D\").getDeclaredConstructor().newInstance(); } catch (Exception e) { } return new Span(); } }\n",
+                "gr/Use.java", "package gr;\nimport java.util.*;\npublic class Use {\n"
+                        + " public static int ints(Collection<Integer> c) { int n = 0; for (Integer x : c) n++; return n; }\n"
+                        + " public static int up(Collection<Integer> c) { return ints(c); }\n}\n")));
+        try {
+            Candor.runScan(cls);
+            AnalysisContext c = AnalysisState.ctx();
+            TreeSet<UnknownReason> why = c.unknownWhy.getOrDefault("gr.Use.ints", new TreeSet<>());
+            assertFalse(c.edges.getOrDefault("gr.Use.ints", Set.of()).contains("gr.SpanIter.next"), "still demoted");
+            assertTrue(why.stream().anyMatch(w -> w.toString().equals("dispatch:java.util.Iterator.next")), "got " + why);
+            assertTrue(why.stream().anyMatch(w -> ReasonClass.classify(w.format()).token().equals("reflect")),
+                    "the demoted body's reflect class must survive on the site, got " + why);
+            Map<String, TreeSet<String>> acc = Policy.scanReasonClassAcc();
+            assertTrue(acc.getOrDefault("gr.Use.up", new TreeSet<>()).contains("reflect"),
+                    "…and reach its callers, as it did through the edge, got " + acc.get("gr.Use.up"));
+        } finally {
+            TestCompiler.rm(cls.getParent());
+        }
+    }
+
+    /** THE R1462 SHAPE (audit of ad3d625, item b): a {@code List<String>} over a project {@code AbstractList<String>} whose
+     *  {@code get} writes. The demoted edge is the wrong-type {@code Iterator<Integer>.next} — the classifier is RIGHT —
+     *  and the real path ({@code AbstractList$Itr.next -> get}) is not edged at a JDK-typed receiver by design
+     *  ({@code Cha#reentryOverOwner}); the argument contract charges the CALLER that passes the project list. So: the
+     *  caller keeps {@code Fs}; the iterating function and a field-held receiver are disclosed, never silent. Executed
+     *  (javaagent-r1461/fx5): {@code caller()} and {@code field()} both write. */
+    @Test
+    void theR1462ShapeIsDisclosedAtTheIteratorAndChargedAtTheCaller() throws Exception {
+        Path cls = TestCompiler.compile(new HashMap<>(Map.of(
+                "hx/E.java", "package hx;\nclass E { " + HIT + " }\n",
+                "hx/Skel.java", "package hx;\npublic class Skel extends java.util.AbstractList<String> {\n"
+                        + " public String get(int i) { E.hit(); return \"x\"; } public int size() { return 1; } }\n",
+                "hx/IntIter.java", "package hx;\npublic class IntIter implements java.util.Iterator<Integer> {\n"
+                        + " public boolean hasNext() { return false; } public Integer next() { E.hit(); return 1; } }\n",
+                "hx/Use.java", "package hx;\nimport java.util.*;\npublic class Use {\n List<String> f = new Skel();\n"
+                        + " public static int strs(List<String> l) { int n = 0; for (String s : l) n++; return n; }\n"
+                        + " public static int caller() { return strs(new Skel()); }\n"
+                        + " public int field() { int n = 0; for (String s : f) n++; return n; }\n}\n")));
+        try {
+            Map<String, EffectSet> inf = Candor.runScan(cls);
+            AnalysisContext c = AnalysisState.ctx();
+            assertTrue(inf.get("hx.Use.caller").contains(Effect.FS), "the argument contract charges the caller: " + inf.get("hx.Use.caller"));
+            for (String fn : List.of("hx.Use.strs", "hx.Use.field")) {
+                assertTrue(inf.get(fn).contains(Effect.UNKNOWN), fn + " must be disclosed, got " + inf.get(fn));
+                assertTrue(c.unknownWhy.getOrDefault(fn, new TreeSet<>()).stream()
+                        .anyMatch(w -> w.toString().equals("dispatch:java.util.Iterator.next")), fn + " got " + c.unknownWhy.get(fn));
+            }
+        } finally {
+            TestCompiler.rm(cls.getParent());
         }
     }
 

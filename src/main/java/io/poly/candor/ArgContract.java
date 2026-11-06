@@ -683,7 +683,7 @@ final class ArgContract {
      *  disclosure can make another demoted body newly carry {@code Unknown}. Monotone. */
     static boolean hedgeFloor(AnalysisContext c, Map<String, EffectSet> fx) {
         if (c.r1461Hedged.isEmpty()) return false;
-        Map<String, TreeSet<String>> blind = null;
+        Map<String, TreeSet<String>> blind = null, classAcc = null;
         boolean added = false;
         for (var e : c.r1461Hedged.entrySet()) {
             String caller = e.getKey();
@@ -699,6 +699,17 @@ final class ArgContract {
                     hit = bb != null && !blind.getOrDefault(caller, new TreeSet<>()).containsAll(bb);
                 }
                 if (hit) added |= disclose(c, caller, a[0], a[1], "R1461U", a[0], a[2]);
+                // A HEDGE MUST NOT DELETE A DISCLOSURE (audit of ad3d625): the body's own reason CLASSES stopped
+                // propagating with the edge, so a reason-scoped `deny Unknown[reflect]` that failed through it would
+                // pass. The site carries one representative reason per class the body reaches — the projection union
+                // entries already make (ReportWriter#contributorReasons, R1239). Monotone: reasons are only added.
+                if (be != null && be.contains(Effect.UNKNOWN)) {
+                    if (classAcc == null) classAcc = Policy.scanReasonClassAcc();
+                    TreeSet<UnknownReason> w = new TreeSet<>();
+                    ReportWriter.contributorReasons(a[2], classAcc, w);
+                    TreeSet<UnknownReason> mine = c.unknownWhy.computeIfAbsent(caller, k -> new TreeSet<>());
+                    for (UnknownReason r : w) added |= mine.add(r);
+                }
             }
         }
         return added;

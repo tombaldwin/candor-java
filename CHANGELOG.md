@@ -14,13 +14,21 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   `for (Integer x : Collection<Integer>)` used to be charged the `Fs` of the program's only `Iterator<Span>`, because
   class-hierarchy analysis over `Iterator.next()` reaches every project implementor whatever its element type. The edge
   cannot simply be dropped: generics are not enforced by the JVM, and a raw `iterator()` override or an unchecked
-  `(Collection)` upcast really does run that implementor (executed). So the edge is replaced by the disclosure where the
+  `(Collection)` upcast really does run that implementor (executed). The bare charge is ALSO lost where the wrong-type
+  edge was the only thing covering a real one: a `for (String s : list)` over a project `AbstractList<String>` whose
+  `get` writes, where the list arrives as a `List<String>` parameter or field. That write runs through
+  `AbstractList$Itr.next`, which the engine does not edge at a JDK-typed receiver (R1462's residual). The argument
+  contract still charges a caller that passes the project list, and the iterating function now reads `Unknown`. So the
+  edge is replaced by the disclosure where the
   class files PROVE both of these: the receiver's declared type argument (from the `LocalVariableTypeTable`, the method
   or field `Signature`, or a call's generic return type such as `c.iterator()` over a `Collection<Integer>`), and the
   implementor's. Both must be resolved classes, and neither may be a subtype of the other. Anything not resolved that
   way keeps today's edge: raw types, missing signatures, wildcards, type variables, `Object`, casts and dependency
   classes. The disclosure is decided after the fixpoint, and only where the demoted body carries something the site
-  lacks (an effect, any `Unknown`, or an `invisible` package).
+  lacks (an effect, any `Unknown`, or an `invisible` package). Where the body carried `Unknown`, the site also carries
+  one reason per reason class the body reached (`reflect`, `callback`, `native`, …), so a reason-scoped
+  `deny Unknown[reflect]` that failed before still fails. "Raw types keep the edge" means raw DECLARATIONS: a raw value
+  stored into a generic local is judged by the local's declared type.
 
   **Scope.** The owners covered are `java.lang.Iterable` and the `java.util` types that reach `Iterable`, `Map`,
   `Iterator` or `Map.Entry`. Other generic JDK owners keep their edges: `java.util.function`, `java.util.concurrent`,

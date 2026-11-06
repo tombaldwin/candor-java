@@ -9,27 +9,38 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
-- **⚠ A dispatch over a JDK generic type no longer charges a project implementor whose type argument cannot match the
-  receiver's; it discloses `Unknown[dispatch:<owner>.<member>]` on that site instead (SOUNDNESS R1461).** `for (Integer x :
-  Collection<Integer>)` used to be charged the `Fs` of the program's only `Iterator<Span>`, because class-hierarchy
-  analysis over `Iterator.next()` reaches every project implementor whatever its element type. The edge cannot simply be
-  dropped: generics are not enforced by the JVM, and a raw `iterator()` override or an unchecked `(Collection)` upcast
-  really does run that implementor (executed). So where the class files PROVE the receiver's declared type argument
-  (`LocalVariableTypeTable`, the method or field `Signature`, or a call's generic return type such as `c.iterator()` over a
-  `Collection<Integer>`) and the implementor's are two resolved classes, neither a subtype of the other, the edge is
-  replaced by the disclosure. Anything not resolved that way keeps today's edge: raw types, missing signatures, wildcards,
-  type variables, `Object`, casts, dependency classes. The disclosure is decided after the fixpoint, and only where the
-  demoted body carries something the site lacks (an effect, any `Unknown`, an `invisible` package).
-  **What moves:** a bare `deny <E>` (without `Unknown`) on such a site, and on its callers, goes from failing to
-  passing. This is the price of the hedge. `deny <E> Unknown` keeps failing on every one of them. **Measured against
-  published 0.41.1 over 452 corpus jars:** 6,020 rows lose a concrete effect (11,521 row/effect pairs). Every one carries
-  the new `Unknown` and reaches a site whose demoted body carried that effect; 0 `deny <E> Unknown` gates move. 794 rows
-  newly carry `Unknown` (499 of them were pure). Sites by owner: `java.util` collections and `Iterable` 38,383,
-  `java.util.function` 912, `java.util.concurrent` 201. The two false bare-`deny Log` failures that the R1462 entry below
-  measured (kafka `KerberosShortNamer.shortName`, `AddPartitionsToTxnTopic.toString`) return to their 0.41.1 verdict.
-  `-Dcandor.r1461=off` or `CANDOR_R1461=off` restores the previous edges. Not in a GraalVM native image, which has no JDK
-  class files to read signatures from: there every edge is kept as before, so the native binary over-charges where
-  the jar discloses.
+- **⚠ A dispatch over a JDK collection type no longer charges a project implementor whose type argument cannot match
+  the receiver's; it discloses `Unknown[dispatch:<owner>.<member>]` on that site instead (SOUNDNESS R1461).**
+  `for (Integer x : Collection<Integer>)` used to be charged the `Fs` of the program's only `Iterator<Span>`, because
+  class-hierarchy analysis over `Iterator.next()` reaches every project implementor whatever its element type. The edge
+  cannot simply be dropped: generics are not enforced by the JVM, and a raw `iterator()` override or an unchecked
+  `(Collection)` upcast really does run that implementor (executed). So the edge is replaced by the disclosure where the
+  class files PROVE both of these: the receiver's declared type argument (from the `LocalVariableTypeTable`, the method
+  or field `Signature`, or a call's generic return type such as `c.iterator()` over a `Collection<Integer>`), and the
+  implementor's. Both must be resolved classes, and neither may be a subtype of the other. Anything not resolved that
+  way keeps today's edge: raw types, missing signatures, wildcards, type variables, `Object`, casts and dependency
+  classes. The disclosure is decided after the fixpoint, and only where the demoted body carries something the site
+  lacks (an effect, any `Unknown`, or an `invisible` package).
+
+  **Scope.** The owners covered are `java.lang.Iterable` and the `java.util` types that reach `Iterable`, `Map`,
+  `Iterator` or `Map.Entry`. Other generic JDK owners keep their edges: `java.util.function`, `java.util.concurrent`,
+  `Enumeration`, `Spliterator`.
+
+  **Pinned JDK facts.** The JDK's generic signatures come from a new pinned index, `candor/jdk-generics.idx.gz`, built
+  by `soundness/jdk_index/derive.sh`. The jar and the native image therefore give the same answer.
+
+  **What moves.** A bare `deny <E>` (without `Unknown`) on such a site, and on its callers, goes from failing to
+  passing. This is the price of the hedge. `deny <E> Unknown` keeps failing on every one of them.
+
+  **Measured against published 0.41.1 over 452 corpus jars:**
+  - 5,374 rows lose a concrete effect (8,740 row/effect pairs). Every one carries the new `Unknown` and reaches a site
+    whose demoted body carried that effect.
+  - 0 `deny <E> Unknown` gates move.
+  - 794 rows newly carry `Unknown`; 499 of them were pure.
+  - The two false bare-`deny Log` failures that the R1462 entry below measured (kafka `KerberosShortNamer.shortName`,
+    `AddPartitionsToTxnTopic.toString`) return to their 0.41.1 verdict.
+
+  `-Dcandor.r1461=off` or `CANDOR_R1461=off` restores the previous edges.
 
 ## [0.41.2] — 2026-11-05
 

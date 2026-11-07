@@ -56,12 +56,13 @@ jobs:
       # SOUNDNESS R492/R727 — the GENERATED framework member -> effect table must be exactly what its pinned
       # inputs (sources.tsv jars, the generator, THIS engine) produce. Exit 1 = hand-edited, or stale against a
       # classifier change: rerun `bash soundness/kappa_table/derive.sh build/libs/candor-java-*-all.jar` and read
-      # the diff. (Every push already checks the cheap half — content and generator checksums — in
+      # the diff. check.sh is derive.sh --check with the WHOLE drift reported (derive.sh --check truncates its diff
+      # at 20 lines and dies on SIGPIPE); its REMOVED lines are the ones to read first -- see its header. (Every push already checks the cheap half — content and generator checksums — in
       # KappaFrameworkReachTest; this is the half that needs the jars.)
       - name: Framework-reach table reproduces (derive.sh --check)
         run: |
           ./gradlew --no-daemon -q shadowJar
-          bash soundness/kappa_table/derive.sh --check build/libs/candor-java-*-all.jar
+          bash soundness/kappa_table/check.sh build/libs/candor-java-*-all.jar
 
       # SOUNDNESS R1094 — the derived JDK indexes (supertypes / SAMs / invoking HOFs) are checked-in inputs written
       # from the Temurin 17/21/25 images pinned in soundness/jdk_index/images.tsv. Every push checks their hashes

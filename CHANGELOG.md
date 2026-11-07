@@ -9,6 +9,20 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **⚠ The framework table no longer charges a rule's effect as a stand-in for a dispatch it cannot follow; it discloses the
+  dispatch instead (SOUNDNESS R1468, the R1052 step-5a stand-in).** Where a framework body's closure called a proven-pure
+  (`P`) member and also reached a dispatch the generator cannot follow, the generator put back the owner-wide name rule's
+  effect (a REST client -> `Net`, a model SDK -> `Llm`/`Net`, a data template -> `Db`) as a stand-in for the hidden call.
+  `new RestTemplate()` was charged `Net` that way; executed on two major versions of the library, it opens no connection.
+  The stand-in is now kept only where a surveyed implementer of the unfollowable dispatch carries the same effect (and a
+  model request whose body is charged `Net` keeps its `Llm` label). Executed: `RabbitMessagingTemplate.receiveAndConvert`
+  connects and stays `Net`. Elsewhere the member gets a new `C` hedge line, and a call to it reports
+  `Unknown[dispatch:<the member the table could not follow>]` (e.g. `com.fasterxml.jackson.databind.Module.setupModule`
+  for the REST client constructor). 75 (member, effect) charges are removed from the table (Net 33, Llm 22, Db 20), each
+  member now disclosed (39 `C` lines, 14 `U` lines); 25 stand-ins are kept. On a probe that calls every affected member
+  directly against published 0.41.3: `deny Net` 1 -> 0 on 10 members, `deny Db` 1 -> 0 on 12, `deny Llm` unchanged, and
+  each of those 22 gains a new `Unknown` reason on the same call; `deny Unknown` 0 -> 1 on 33. The 452-jar corpus never
+  calls these members (0 changed rows beyond the R1471 entry below).
 - **The framework tables stop dropping a hedge when an implementer reads wider than exactly `Unknown` (R1471).** The weekly
   `derive.sh --check` had been red since 0.40.15: `implementersUnvouched` and the cross-jar `O` test vouched for a body only
   when its `inferred` set was exactly `[Unknown]`, so once the dispatch closure widened a body to

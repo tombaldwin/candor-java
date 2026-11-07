@@ -317,8 +317,25 @@ public class FrameworkReachGen {
         String pin0 = System.getProperty("framework.pureIn");
         Set<String> pureKeys = new HashSet<>(PURE);
         if (pin0 != null) pureKeys.retainAll(Files.readAllLines(Path.of(pin0), StandardCharsets.UTF_8));
+        //
+        // SOUNDNESS R1468 — BUT THE STAND-IN IS A CONCRETE EFFECT ONLY WHERE THE HIDDEN DISPATCH CAN PERFORM IT. Put back
+        // unconditionally, the rule's charge landed on bodies whose unfollowable dispatch has nothing to do with it:
+        // EXECUTED, `new RestTemplate()` opens no connection (spring-web 5.3.39 and 6.1.10, SecurityManager connect
+        // trace) and the table charged it Net, because its converter set-up reaches a dispatch the table cannot follow
+        // and RestTemplate's pure validateConverters() is under the whole-owner Net rule. 93 (member, effect) pairs had
+        // only this stand-in as their charge. So per body the generator now also records WHAT the unfollowable
+        // dispatches in its closure can do: the concrete effects of the surveyed implementers of each abstract target
+        // (`oImpl`), closed over the same edges. The rule's charge is kept where an implementer carries the same effect
+        // (RabbitMessagingTemplate.receiveAndConvert: the abstract doReceive is implemented by a body that reaches the
+        // broker — EXECUTED, it connects); where none does — an unsurveyed owner, implementers that are Unknown or
+        // charged with other effects — the stand-in is NOT a charge, and the member is DISCLOSED instead (a `C` line,
+        // Unknown[dispatch:<an unfollowable member of its closure>]). Never nothing: `LOST` also keeps every downstream
+        // reader (implementersUnvouched, returnTypeInert, BROAD, crossJar) seeing the body as unvouched, exactly as it did
+        // while the stand-in was a charge.
         int[] dropC = new int[N];
         boolean[] opaqueC = new boolean[N];
+        int[] oImpl = new int[N];
+        String[] oRep = new String[N];
         for (int n = 0; n < N; n++) {
             MethodNode mn = nodeMethod.get(n);
             if (mn.instructions == null) continue;
@@ -327,11 +344,19 @@ public class FrameworkReachGen {
                 if (pureKeys.contains(m.owner + "." + m.name + m.desc)) dropC[n] |= ruleMask(m.owner, m.name, m.desc);
                 else if (!jdkOwner(m.owner) && !loggingFrontier(m.owner) && !runtimeOwner(m.owner)
                         && !ruleCharges(m.owner, m.name, m.desc) && resolve(nodeJar.get(n), m.owner, m.name, m.desc).isEmpty()
-                        && (!classJars.containsKey(m.owner) || implementersUnvouched(m.owner, m.name, m.desc, eff)))
+                        && (!classJars.containsKey(m.owner) || implementersUnvouched(m.owner, m.name, m.desc, eff))) {
                     opaqueC[n] = true;
+                    if (classJars.containsKey(m.owner)) oImpl[n] |= implementersMask(m.owner, m.name, m.desc, eff);
+                    // the member the disclosure names: an abstract member the surveyed jars declare first, then an
+                    // unsurveyed owner's, then a JDK method a surveyed class only inherits (Enum.ordinal) — the least
+                    // informative; deterministic within a rank. The rank is a sort prefix, stripped on output.
+                    int rank = !classJars.containsKey(m.owner) ? 1 : declaredInUniverse(nodeJar.get(n), m.owner, m.name + m.desc) ? 0 : 2;
+                    String k = rank + "|" + m.owner.replace('/', '.') + "." + m.name;
+                    if (oRep[n] == null || k.compareTo(oRep[n]) < 0) oRep[n] = k;
+                }
             }
         }
-        {   // close both over the same statically-resolved edges, callers inherit from callees
+        {   // close all four over the same statically-resolved edges, callers inherit from callees
             ArrayDeque<Integer> q = new ArrayDeque<>();
             boolean[] inq = new boolean[N];
             for (int n = 0; n < N; n++) if (dropC[n] != 0 || opaqueC[n]) { q.add(n); inq[n] = true; }
@@ -340,13 +365,34 @@ public class FrameworkReachGen {
                 for (int p : pred[n]) {
                     int nd = dropC[p] | dropC[n];
                     boolean no = opaqueC[p] || opaqueC[n];
-                    if (nd != dropC[p] || no != opaqueC[p]) { dropC[p] = nd; opaqueC[p] = no; if (!inq[p]) { q.add(p); inq[p] = true; } }
+                    int ni = oImpl[p] | oImpl[n];
+                    String nr = oRep[n] != null && (oRep[p] == null || oRep[n].compareTo(oRep[p]) < 0) ? oRep[n] : oRep[p];
+                    if (nd != dropC[p] || no != opaqueC[p] || ni != oImpl[p] || !Objects.equals(nr, oRep[p])) {
+                        dropC[p] = nd; opaqueC[p] = no; oImpl[p] = ni; oRep[p] = nr;
+                        if (!inq[p]) { q.add(p); inq[p] = true; }
+                    }
                 }
             }
         }
-        int reapplied = 0;
-        for (int n = 0; n < N; n++) if (opaqueC[n] && (dropC[n] & ~eff[n]) != 0) { eff[n] |= dropC[n]; reapplied++; }
-        System.err.println("framework-reach: " + reapplied + " bodies keep a P member's rule charge (opaque closure)");
+        int reapplied = 0, disclosed = 0;
+        LOST = new int[N];
+        OPAQUE_REP = oRep;
+        for (int n = 0; n < N; n++) {
+            if (!opaqueC[n]) continue;
+            int stand = dropC[n] & ~eff[n];
+            if (stand == 0) continue;
+            int keep = stand & oImpl[n];
+            // `Llm` is a LABEL no body performs (the model-SDK blanket's name for the request it sends), so no implementer
+            // can carry it: where the body is charged `Net` — its own, or a stand-in kept above — a stand-in `Llm` is the
+            // label of that request and is kept too. MEASURED without this (the independent checker flagged all six):
+            // OpenAiApi.chatCompletionEntity(req, headers)/embeddings and four sibling request methods lost `Llm` while
+            // their own body stayed `Net` — real model calls.
+            if (((eff[n] | keep) & bit(Effect.NET.specName())) != 0) keep |= stand & bit(Effect.LLM.specName());
+            if (keep != 0) { eff[n] |= keep; reapplied++; }
+            if ((stand & ~keep) != 0) { LOST[n] = stand & ~keep; disclosed++; }
+        }
+        System.err.println("framework-reach: " + reapplied + " bodies keep a P member's rule charge (opaque closure, an "
+                + "implementer of the unfollowable dispatch carries it); " + disclosed + " disclose it instead (R1468)");
         // 5b. SOUNDNESS R1052 — the P list for the NEXT iteration: this run's candidates, restricted to the list the
         // scans were given (-Dframework.pureIn), whose return type is inert under these closed effects. derive.sh
         // stops when it reproduces its input.
@@ -394,8 +440,8 @@ public class FrameworkReachGen {
                     if (!callable || name.equals("<clinit>")) continue;
                     LinkedHashSet<Integer> rs = new LinkedHashSet<>(tg);
                     if ((decl.access & Opcodes.ACC_STATIC) != 0 || name.equals("<init>")) rs.addAll(clinits(j, cn.name));
-                    int declared = 0;
-                    for (int r : rs) declared |= eff[r];
+                    int declared = 0, declaredLost = 0;
+                    for (int r : rs) { declared |= eff[r]; declaredLost |= LOST[r]; }
                     String key = cn.name + "." + sig;
                     if ((decl.access & Opcodes.ACC_STATIC) == 0 && !name.equals("<init>") && DISPATCH_ROOTS) {
                         // SOUNDNESS R1096 — the engine's bounded CHA (Candor#virtualDispatch): a NARROW fan-out is
@@ -406,15 +452,27 @@ public class FrameworkReachGen {
                         if (ov.size() + tg.size() <= Rules.CHA_FANOUT_LIMIT) rs.addAll(ov);
                         else {
                             int extra = 0;
-                            for (int r : ov) extra |= eff[r];
-                            if ((extra & ~declared) != 0) BROAD.add(key);
+                            for (int r : ov) extra |= eff[r] | LOST[r];     // R1468: a disclosed stand-in counts as it did charged
+                            if ((extra & ~(declared | declaredLost)) != 0) BROAD.add(key);
                         }
                     }
-                    int mask = 0;
-                    for (int r : rs) mask |= eff[r];
+                    int mask = 0, lost = 0;
+                    String rep = null;
+                    for (int r : rs) {
+                        mask |= eff[r];
+                        if (LOST[r] != 0) {
+                            lost |= LOST[r];
+                            if (OPAQUE_REP[r] != null && (rep == null || OPAQUE_REP[r].compareTo(rep) < 0)) rep = OPAQUE_REP[r];
+                        }
+                    }
                     if (declared == 0 && mask != 0) OVERRIDE_ONLY.add(key);   // charged by an override and nothing else
+                    // SOUNDNESS R1468 — a stand-in this member's row no longer carries is disclosed (a `C` line), never dropped
+                    if (framework && (lost & ~mask) != 0 && rep != null) {
+                        CLOSURE.merge(key, rep, (x, y) -> x.compareTo(y) <= 0 ? x : y);
+                        CLOSURE_LOST.merge(key, lost & ~mask, (x, y) -> x | y);
+                    }
                     if (framework && DISPATCH_ROOTS && !BROAD.contains(key))
-                        crossJar(j, cn, name, desc, decl, mask | ruleMask(cn.name, name, desc), eff, wit0);
+                        crossJar(j, cn, name, desc, decl, mask | lost | ruleMask(cn.name, name, desc), eff, wit0);
                     perJar.computeIfAbsent(key, k -> new TreeMap<>()).put(j, mask);
                     roots.computeIfAbsent(key, k -> new TreeMap<>()).put(j, rs.stream().mapToInt(Integer::intValue).toArray());
                 }
@@ -445,7 +503,7 @@ public class FrameworkReachGen {
                 if (start < 0) path.add("(no single body: re-applied rule charge, R1052 5a)");
                 while (cur >= 0 && guard++ < 10_000) {
                     path.add(nodeKey.get(cur));
-                    if (ptr[cur] == null || ptr[cur][i] < 0) { path.add("(R1052 5a: a P member's rule charge kept — opaque closure)"); break; }
+                    if (ptr[cur] == null || ptr[cur][i] < 0) { path.add("(R1052 5a: a P member's rule charge kept — opaque closure, an implementer of the unfollowable dispatch carries it, R1468)"); break; }
                     int nx = ptr[cur][i];
                     if (nx == cur) break;
                     cur = nx;
@@ -470,6 +528,14 @@ public class FrameworkReachGen {
             for (String k : FLOORED)                                                     // SOUNDNESS R1189 the floor
                 if (!HEDGE.containsKey(k) && !BROAD.contains(k) && !charged.contains(k)) { hl.add("U\t" + k); floored++; }
             System.err.println("framework-reach: " + floored + " members kept at U by the floor (R1189) or hedged by R1193");
+            // SOUNDNESS R1468 — a member whose row lost a step-5a stand-in, and that no A/U line above discloses already:
+            // Unknown[dispatch:<the unfollowable member>] (FrameworkReach#closureTarget), beside a charge or alone.
+            Set<String> disclosedAU = new HashSet<>();
+            for (String l : hl) if (l.startsWith("A\t") || l.startsWith("U\t")) disclosedAU.add(l.substring(2));
+            int closures = 0;
+            for (Map.Entry<String, String> c : CLOSURE.entrySet())
+                if (!disclosedAU.contains(c.getKey())) { hl.add("C\t" + c.getKey() + "\t" + c.getValue().substring(2)); closures++; }
+            System.err.println("framework-reach: " + closures + " members disclose an unfollowable closure instead of a rule stand-in (R1468)");
             for (Map.Entry<String, TreeSet<String>> x : XJAR.entrySet())                  // SOUNDNESS R1097
                 hl.add("O\t" + x.getKey() + "\t" + String.join(",", x.getValue()));
             for (String pk : PURE) hl.add("P\t" + pk);
@@ -485,12 +551,16 @@ public class FrameworkReachGen {
             hb.append("# P = a member a NAME rule charges whose surveyed body is a proven-pure field accessor (R1052).\n");
             hb.append("# O = a public member overridden in ANOTHER surveyed jar by a body that can do more than the row says;\n");
             hb.append("#     the overriding classes follow (R1097). See FrameworkReach#crossJarOverriders.\n");
+            hb.append("# C = a member whose closure reaches a dispatch the table cannot follow, where a NAME rule's charge used to\n");
+            hb.append("#     stand in for it and no surveyed implementer carries that effect; the unfollowed member follows (R1468).\n");
             hb.append("# entries ").append(hl.size()).append('\n');
             hb.append("# content-sha256 ").append(HexFormat.of().formatHex(hm.digest())).append('\n');
             for (String r : hl) hb.append(r).append('\n');
             Files.writeString(Path.of(hedgeOut), hb.toString(), StandardCharsets.UTF_8);
         }
         wit.addAll(wit0);
+        for (Map.Entry<String, String> c : CLOSURE.entrySet())    // SOUNDNESS R1468: the stand-ins disclosed, not charged
+            wit.add(c.getKey() + "\t" + names(CLOSURE_LOST.get(c.getKey())) + "\tR1468-DISCLOSED\tdispatch:" + c.getValue().substring(2));
         Collections.sort(rows);
         Collections.sort(wit);
         MessageDigest md = MessageDigest.getInstance("SHA-256");
@@ -891,7 +961,9 @@ public class FrameworkReachGen {
                 Integer id = node(kc[0], sub, nd);
                 if (id == null) continue;
                 int add = eff[id] & ~mask;
-                boolean unk = eff[id] == 0 && unkAny(id);   // R1471: an Unknown-ONLY test missed a widened body
+                // R1471: an Unknown-ONLY test missed a widened body. R1468: a stand-in the override's row discloses rather
+                // than charges is still something it can do beyond the row.
+                boolean unk = (eff[id] == 0 && unkAny(id)) || (LOST[id] & ~mask) != 0;
                 if (add == 0 && !unk) continue;
                 XJAR.computeIfAbsent(key, k -> new TreeSet<>()).add(sub);
                 wit0.add(key + "\t" + (unk ? "Unknown" : names(add)) + "\tXJAR\t" + jarNames.get(j) + "\t"
@@ -1080,12 +1152,62 @@ public class FrameworkReachGen {
                     // widened (R1303/R1304, S6) a body whose own site is Unknown reads inferred [Clock,Fs,Log,Rand,Unknown] with
                     // direct [], and the exact-[Unknown] test read it as examined-and-pure, dropping the abstract member's `A`
                     // while its concrete implementers kept their `U` (floor / UNK_ANY, line ~374).
-                    if (eff[t] != 0 || unkAny(t)) return true;
+                    // R1468: a body whose rule stand-in is disclosed rather than charged is as unvouched as it was charged
+                    if (eff[t] != 0 || unkAny(t) || (LOST != null && LOST[t] != 0)) return true;
                 }
             }
         }
         return bodies == 0;
     }
+
+    /** SOUNDNESS R1468 — the concrete effects the surveyed implementers of an abstract {@code owner.name+desc} reach:
+     *  the same walk as {@link #implementersUnvouched}. What an unfollowable dispatch to it can do, as far as the
+     *  surveyed jars say; an implementer outside them is the reason the dispatch is disclosed at all. */
+    static int implementersMask(String owner, String name, String desc, int[] eff) {
+        implementersUnvouched(owner, name, desc, eff);    // builds `subs`
+        ArrayDeque<String> q = new ArrayDeque<>(subs.getOrDefault(owner, List.of()));
+        Set<String> seen = new HashSet<>();
+        int m = 0;
+        while (!q.isEmpty()) {
+            String c = q.poll();
+            if (!seen.add(c)) continue;
+            q.addAll(subs.getOrDefault(c, List.of()));
+            List<Integer> js = classJars.get(c);
+            if (js == null) continue;
+            for (int j : js) {
+                ClassNode cn = cls(j, c);
+                if (cn == null || (cn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_INTERFACE)) != 0) continue;
+                for (int t : resolve(j, c, name, desc)) m |= eff[t];
+            }
+        }
+        return m;
+    }
+
+    /** SOUNDNESS R1468 — whether {@code owner} or a supertype the surveyed jars ship declares {@code nameDesc} (so a call
+     *  that resolves to no body is an abstract member's dispatch, not a JDK method the surveyed class inherits). */
+    static boolean declaredInUniverse(int from, String owner, String nameDesc) {
+        ArrayDeque<String> q = new ArrayDeque<>(); q.add(owner);
+        Set<String> seen = new HashSet<>();
+        while (!q.isEmpty()) {
+            String c = q.poll();
+            if (!seen.add(c)) continue;
+            ClassNode cn = cls(jarOf(from, c), c);
+            if (cn == null) continue;
+            for (MethodNode mn : cn.methods) if ((mn.name + mn.desc).equals(nameDesc)) return true;
+            if (cn.superName != null) q.add(cn.superName);
+            q.addAll(cn.interfaces);
+        }
+        return false;
+    }
+
+    /** SOUNDNESS R1468 — per body, the step-5a rule stand-in it DISCLOSES instead of charging (no implementer of an
+     *  unfollowable dispatch in its closure carries that effect), and the least unfollowable member of its closure,
+     *  which the disclosure names. Null until step 5a has run. */
+    static int[] LOST;
+    static String[] OPAQUE_REP;
+    /** Consumer-facing members whose row lost a stand-in: key -> the unfollowable member the `C` line names. */
+    static final TreeMap<String, String> CLOSURE = new TreeMap<>();
+    static final Map<String, Integer> CLOSURE_LOST = new HashMap<>();
 
     /** The {@code <clinit>} bodies initialising {@code owner} runs (its own, then its superclasses'). */
     static List<Integer> clinits(int from, String owner) {

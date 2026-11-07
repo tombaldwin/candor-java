@@ -5,7 +5,7 @@
 # NAMED MISS: the closure stops at the JDK, which is OPAQUE here (no bodies; only the classifier's name rules),
 # while framework bodies are TRANSPARENT. A framework member whose effect happens inside a JDK body the
 # classifier leaves uncharged is missed exactly as a direct call to that JDK member is (R814 is that frontier).
-# generator-sha256 e64d78ce677f22d280e1c6d31f6b281330369713253fd140fabcb61740dc4e80
+# generator-sha256 27c44cba54474ef2a744fa01f7e9420a39eb391d1528e60c5540613d57e2696f
 # source org.jetbrains:annotations:24.1.0 27a770dc7ce50500918bb8c3c0660c98290630ec796b5e3cf6b90f403b3033c6
 # source aopalliance:aopalliance:1.0 0addec670fedcd3f113c5c8091d783280d23f75e3acb841b61a9cdb079376a08
 # source software.amazon.awssdk:auth:2.25.60 0a9a569060d287f069c61eaefcad6e5e423fb048f0f7198d3825b7f3d6823258
@@ -123,8 +123,8 @@
 # source org.threeten:threeten-extra:1.8.0 51e4d21edc4e9447f7760c050e0baee75d7d973f387ba605a17abdc4d24fd6d8
 # source com.twilio.sdk:twilio:10.1.5 94a3c0a3e2ea63bd2c84a8e9e5b406ba3482bc902e2092eebe75048e47eb6300
 # source xerces:xercesImpl:2.12.2 6fc991829af1708d15aea50c66f0beadcd2cfeb6968e0b2f55c1b0909883fe16
-# entries 52069
-# content-sha256 159ed7e081f88489d71b30388c6395226a761d0c29d6239c3679e63a7cecaad4
+# entries 52027
+# content-sha256 8e290ccf92be6837b9cf3e9f3795a0563cde64641bfac8b686f0bfc1a2f84c40
 com/csvreader/CsvReader.<init>(Ljava/lang/String;)V	Fs
 com/csvreader/CsvReader.<init>(Ljava/lang/String;C)V	Fs
 com/csvreader/CsvReader.<init>(Ljava/lang/String;CLjava/nio/charset/Charset;)V	Fs
@@ -32856,23 +32856,15 @@ org/springframework/ai/chat/client/advisor/api/BaseAdvisor.adviseCall(Lorg/sprin
 org/springframework/ai/chat/client/advisor/api/BaseAdvisor.adviseStream(Lorg/springframework/ai/chat/client/ChatClientRequest;Lorg/springframework/ai/chat/client/advisor/api/StreamAdvisorChain;)Lreactor/core/publisher/Flux;	Llm,Log,Net
 org/springframework/ai/chat/client/advisor/api/BaseChatMemoryAdvisor.adviseCall(Lorg/springframework/ai/chat/client/ChatClientRequest;Lorg/springframework/ai/chat/client/advisor/api/CallAdvisorChain;)Lorg/springframework/ai/chat/client/ChatClientResponse;	Llm,Net
 org/springframework/ai/chat/client/advisor/api/BaseChatMemoryAdvisor.adviseStream(Lorg/springframework/ai/chat/client/ChatClientRequest;Lorg/springframework/ai/chat/client/advisor/api/StreamAdvisorChain;)Lreactor/core/publisher/Flux;	Llm,Log,Net
-org/springframework/ai/chat/client/advisor/observation/DefaultAdvisorObservationConvention.advisorName(Lorg/springframework/ai/chat/client/advisor/observation/AdvisorObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
-org/springframework/ai/chat/client/advisor/observation/DefaultAdvisorObservationConvention.advisorOrder(Lorg/springframework/ai/chat/client/advisor/observation/AdvisorObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
-org/springframework/ai/chat/client/advisor/observation/DefaultAdvisorObservationConvention.aiOperationType(Lorg/springframework/ai/chat/client/advisor/observation/AdvisorObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
-org/springframework/ai/chat/client/advisor/observation/DefaultAdvisorObservationConvention.aiProvider(Lorg/springframework/ai/chat/client/advisor/observation/AdvisorObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
 org/springframework/ai/chat/client/advisor/observation/DefaultAdvisorObservationConvention.getContextualName(Lio/micrometer/observation/Observation$Context;)Ljava/lang/String;	Llm,Net
 org/springframework/ai/chat/client/advisor/observation/DefaultAdvisorObservationConvention.getContextualName(Lorg/springframework/ai/chat/client/advisor/observation/AdvisorObservationContext;)Ljava/lang/String;	Llm,Net
 org/springframework/ai/chat/client/advisor/observation/DefaultAdvisorObservationConvention.getHighCardinalityKeyValues(Lio/micrometer/observation/Observation$Context;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/chat/client/advisor/observation/DefaultAdvisorObservationConvention.getHighCardinalityKeyValues(Lorg/springframework/ai/chat/client/advisor/observation/AdvisorObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/chat/client/advisor/observation/DefaultAdvisorObservationConvention.getLowCardinalityKeyValues(Lio/micrometer/observation/Observation$Context;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/chat/client/advisor/observation/DefaultAdvisorObservationConvention.getLowCardinalityKeyValues(Lorg/springframework/ai/chat/client/advisor/observation/AdvisorObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
-org/springframework/ai/chat/client/advisor/observation/DefaultAdvisorObservationConvention.springAiKind()Lio/micrometer/common/KeyValue;	Llm,Net
-org/springframework/ai/chat/client/observation/ChatClientObservationContext$Builder.build()Lorg/springframework/ai/chat/client/observation/ChatClientObservationContext;	Llm,Net
 org/springframework/ai/chat/client/observation/ChatClientPromptContentObservationHandler.onStop(Lio/micrometer/observation/Observation$Context;)V	Llm,Log,Net
 org/springframework/ai/chat/client/observation/ChatClientPromptContentObservationHandler.onStop(Lorg/springframework/ai/chat/client/observation/ChatClientObservationContext;)V	Llm,Log,Net
 org/springframework/ai/chat/client/observation/DefaultChatClientObservationConvention.advisors(Lio/micrometer/common/KeyValues;Lorg/springframework/ai/chat/client/observation/ChatClientObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
-org/springframework/ai/chat/client/observation/DefaultChatClientObservationConvention.aiOperationType(Lorg/springframework/ai/chat/client/observation/ChatClientObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
-org/springframework/ai/chat/client/observation/DefaultChatClientObservationConvention.aiProvider(Lorg/springframework/ai/chat/client/observation/ChatClientObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
 org/springframework/ai/chat/client/observation/DefaultChatClientObservationConvention.conversationId(Lio/micrometer/common/KeyValues;Lorg/springframework/ai/chat/client/observation/ChatClientObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/chat/client/observation/DefaultChatClientObservationConvention.getContextualName(Lio/micrometer/observation/Observation$Context;)Ljava/lang/String;	Llm,Net
 org/springframework/ai/chat/client/observation/DefaultChatClientObservationConvention.getContextualName(Lorg/springframework/ai/chat/client/observation/ChatClientObservationContext;)Ljava/lang/String;	Llm,Net
@@ -32880,8 +32872,6 @@ org/springframework/ai/chat/client/observation/DefaultChatClientObservationConve
 org/springframework/ai/chat/client/observation/DefaultChatClientObservationConvention.getHighCardinalityKeyValues(Lorg/springframework/ai/chat/client/observation/ChatClientObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/chat/client/observation/DefaultChatClientObservationConvention.getLowCardinalityKeyValues(Lio/micrometer/observation/Observation$Context;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/chat/client/observation/DefaultChatClientObservationConvention.getLowCardinalityKeyValues(Lorg/springframework/ai/chat/client/observation/ChatClientObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
-org/springframework/ai/chat/client/observation/DefaultChatClientObservationConvention.springAiKind()Lio/micrometer/common/KeyValue;	Llm,Net
-org/springframework/ai/chat/client/observation/DefaultChatClientObservationConvention.stream(Lorg/springframework/ai/chat/client/observation/ChatClientObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
 org/springframework/ai/chat/client/observation/DefaultChatClientObservationConvention.tools(Lio/micrometer/common/KeyValues;Lorg/springframework/ai/chat/client/observation/ChatClientObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/chat/evaluation/FactCheckingEvaluator.evaluate(Lorg/springframework/ai/evaluation/EvaluationRequest;)Lorg/springframework/ai/evaluation/EvaluationResponse;	Llm,Net
 org/springframework/ai/chat/evaluation/RelevancyEvaluator.evaluate(Lorg/springframework/ai/evaluation/EvaluationRequest;)Lorg/springframework/ai/evaluation/EvaluationResponse;	Llm,Log,Net
@@ -32943,8 +32933,6 @@ org/springframework/ai/chat/observation/ChatModelMeterObservationHandler.onStop(
 org/springframework/ai/chat/observation/ChatModelObservationContext$Builder.build()Lorg/springframework/ai/chat/observation/ChatModelObservationContext;	Llm,Net
 org/springframework/ai/chat/observation/ChatModelPromptContentObservationHandler.onStop(Lio/micrometer/observation/Observation$Context;)V	Llm,Log,Net
 org/springframework/ai/chat/observation/ChatModelPromptContentObservationHandler.onStop(Lorg/springframework/ai/chat/observation/ChatModelObservationContext;)V	Llm,Log,Net
-org/springframework/ai/chat/observation/DefaultChatModelObservationConvention.aiOperationType(Lorg/springframework/ai/chat/observation/ChatModelObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
-org/springframework/ai/chat/observation/DefaultChatModelObservationConvention.aiProvider(Lorg/springframework/ai/chat/observation/ChatModelObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
 org/springframework/ai/chat/observation/DefaultChatModelObservationConvention.getContextualName(Lio/micrometer/observation/Observation$Context;)Ljava/lang/String;	Llm,Net
 org/springframework/ai/chat/observation/DefaultChatModelObservationConvention.getContextualName(Lorg/springframework/ai/chat/observation/ChatModelObservationContext;)Ljava/lang/String;	Llm,Net
 org/springframework/ai/chat/observation/DefaultChatModelObservationConvention.getHighCardinalityKeyValues(Lio/micrometer/observation/Observation$Context;)Lio/micrometer/common/KeyValues;	Llm,Net
@@ -32962,7 +32950,6 @@ org/springframework/ai/chat/observation/DefaultChatModelObservationConvention.re
 org/springframework/ai/chat/observation/DefaultChatModelObservationConvention.requestTopP(Lio/micrometer/common/KeyValues;Lorg/springframework/ai/chat/observation/ChatModelObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/chat/observation/DefaultChatModelObservationConvention.responseFinishReasons(Lio/micrometer/common/KeyValues;Lorg/springframework/ai/chat/observation/ChatModelObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/chat/observation/DefaultChatModelObservationConvention.responseId(Lio/micrometer/common/KeyValues;Lorg/springframework/ai/chat/observation/ChatModelObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
-org/springframework/ai/chat/observation/DefaultChatModelObservationConvention.responseModel(Lorg/springframework/ai/chat/observation/ChatModelObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
 org/springframework/ai/chat/observation/DefaultChatModelObservationConvention.usageInputTokens(Lio/micrometer/common/KeyValues;Lorg/springframework/ai/chat/observation/ChatModelObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/chat/observation/DefaultChatModelObservationConvention.usageOutputTokens(Lio/micrometer/common/KeyValues;Lorg/springframework/ai/chat/observation/ChatModelObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/chat/observation/DefaultChatModelObservationConvention.usageTotalTokens(Lio/micrometer/common/KeyValues;Lorg/springframework/ai/chat/observation/ChatModelObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
@@ -33075,8 +33062,6 @@ org/springframework/ai/embedding/EmbeddingModel.embed(Ljava/util/List;Lorg/sprin
 org/springframework/ai/embedding/EmbeddingModel.embedForResponse(Ljava/util/List;)Lorg/springframework/ai/embedding/EmbeddingResponse;	Llm,Net
 org/springframework/ai/embedding/EmbeddingResponseMetadata.getOrDefault(Ljava/lang/String;Ljava/util/function/Supplier;)Ljava/lang/Object;	Llm,Net
 org/springframework/ai/embedding/TokenCountBatchingStrategy.batch(Ljava/util/List;)Ljava/util/List;	Llm,Net
-org/springframework/ai/embedding/observation/DefaultEmbeddingModelObservationConvention.aiOperationType(Lorg/springframework/ai/embedding/observation/EmbeddingModelObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
-org/springframework/ai/embedding/observation/DefaultEmbeddingModelObservationConvention.aiProvider(Lorg/springframework/ai/embedding/observation/EmbeddingModelObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
 org/springframework/ai/embedding/observation/DefaultEmbeddingModelObservationConvention.getContextualName(Lio/micrometer/observation/Observation$Context;)Ljava/lang/String;	Llm,Net
 org/springframework/ai/embedding/observation/DefaultEmbeddingModelObservationConvention.getContextualName(Lorg/springframework/ai/embedding/observation/EmbeddingModelObservationContext;)Ljava/lang/String;	Llm,Net
 org/springframework/ai/embedding/observation/DefaultEmbeddingModelObservationConvention.getHighCardinalityKeyValues(Lio/micrometer/observation/Observation$Context;)Lio/micrometer/common/KeyValues;	Llm,Net
@@ -33085,7 +33070,6 @@ org/springframework/ai/embedding/observation/DefaultEmbeddingModelObservationCon
 org/springframework/ai/embedding/observation/DefaultEmbeddingModelObservationConvention.getLowCardinalityKeyValues(Lorg/springframework/ai/embedding/observation/EmbeddingModelObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/embedding/observation/DefaultEmbeddingModelObservationConvention.requestEmbeddingDimension(Lio/micrometer/common/KeyValues;Lorg/springframework/ai/embedding/observation/EmbeddingModelObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/embedding/observation/DefaultEmbeddingModelObservationConvention.requestModel(Lorg/springframework/ai/embedding/observation/EmbeddingModelObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
-org/springframework/ai/embedding/observation/DefaultEmbeddingModelObservationConvention.responseModel(Lorg/springframework/ai/embedding/observation/EmbeddingModelObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
 org/springframework/ai/embedding/observation/DefaultEmbeddingModelObservationConvention.usageInputTokens(Lio/micrometer/common/KeyValues;Lorg/springframework/ai/embedding/observation/EmbeddingModelObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/embedding/observation/DefaultEmbeddingModelObservationConvention.usageTotalTokens(Lio/micrometer/common/KeyValues;Lorg/springframework/ai/embedding/observation/EmbeddingModelObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/embedding/observation/EmbeddingModelMeterObservationHandler.onStop(Lio/micrometer/observation/Observation$Context;)V	Llm,Net
@@ -33094,8 +33078,6 @@ org/springframework/ai/embedding/observation/EmbeddingModelObservationContext$Bu
 org/springframework/ai/image/ImageResponse.<init>(Ljava/util/List;)V	Clock
 org/springframework/ai/image/ImageResponseMetadata.<init>()V	Clock
 org/springframework/ai/image/ImageResponseMetadata.getOrDefault(Ljava/lang/String;Ljava/util/function/Supplier;)Ljava/lang/Object;	Llm,Net
-org/springframework/ai/image/observation/DefaultImageModelObservationConvention.aiOperationType(Lorg/springframework/ai/image/observation/ImageModelObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
-org/springframework/ai/image/observation/DefaultImageModelObservationConvention.aiProvider(Lorg/springframework/ai/image/observation/ImageModelObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
 org/springframework/ai/image/observation/DefaultImageModelObservationConvention.getContextualName(Lio/micrometer/observation/Observation$Context;)Ljava/lang/String;	Llm,Net
 org/springframework/ai/image/observation/DefaultImageModelObservationConvention.getContextualName(Lorg/springframework/ai/image/observation/ImageModelObservationContext;)Ljava/lang/String;	Llm,Net
 org/springframework/ai/image/observation/DefaultImageModelObservationConvention.getHighCardinalityKeyValues(Lio/micrometer/observation/Observation$Context;)Lio/micrometer/common/KeyValues;	Llm,Net
@@ -33294,20 +33276,16 @@ org/springframework/ai/tool/method/MethodToolCallback.call(Ljava/lang/String;)Lj
 org/springframework/ai/tool/method/MethodToolCallback.call(Ljava/lang/String;Lorg/springframework/ai/chat/model/ToolContext;)Ljava/lang/String;	Llm,Log,Net
 org/springframework/ai/tool/method/MethodToolCallbackProvider$Builder.build()Lorg/springframework/ai/tool/method/MethodToolCallbackProvider;	Llm,Log,Net
 org/springframework/ai/tool/method/MethodToolCallbackProvider.getToolCallbacks()[Lorg/springframework/ai/tool/ToolCallback;	Llm,Log,Net
-org/springframework/ai/tool/observation/DefaultToolCallingObservationConvention.aiOperationType(Lorg/springframework/ai/tool/observation/ToolCallingObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
-org/springframework/ai/tool/observation/DefaultToolCallingObservationConvention.aiProvider(Lorg/springframework/ai/tool/observation/ToolCallingObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
 org/springframework/ai/tool/observation/DefaultToolCallingObservationConvention.getContextualName(Lio/micrometer/observation/Observation$Context;)Ljava/lang/String;	Llm,Net
 org/springframework/ai/tool/observation/DefaultToolCallingObservationConvention.getContextualName(Lorg/springframework/ai/tool/observation/ToolCallingObservationContext;)Ljava/lang/String;	Llm,Net
 org/springframework/ai/tool/observation/DefaultToolCallingObservationConvention.getHighCardinalityKeyValues(Lio/micrometer/observation/Observation$Context;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/tool/observation/DefaultToolCallingObservationConvention.getHighCardinalityKeyValues(Lorg/springframework/ai/tool/observation/ToolCallingObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/tool/observation/DefaultToolCallingObservationConvention.getLowCardinalityKeyValues(Lio/micrometer/observation/Observation$Context;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/tool/observation/DefaultToolCallingObservationConvention.getLowCardinalityKeyValues(Lorg/springframework/ai/tool/observation/ToolCallingObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
-org/springframework/ai/tool/observation/DefaultToolCallingObservationConvention.springAiKind(Lorg/springframework/ai/tool/observation/ToolCallingObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
 org/springframework/ai/tool/observation/DefaultToolCallingObservationConvention.toolDefinitionDescription(Lio/micrometer/common/KeyValues;Lorg/springframework/ai/tool/observation/ToolCallingObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/tool/observation/DefaultToolCallingObservationConvention.toolDefinitionName(Lorg/springframework/ai/tool/observation/ToolCallingObservationContext;)Lio/micrometer/common/KeyValue;	Llm,Net
 org/springframework/ai/tool/observation/DefaultToolCallingObservationConvention.toolDefinitionSchema(Lio/micrometer/common/KeyValues;Lorg/springframework/ai/tool/observation/ToolCallingObservationContext;)Lio/micrometer/common/KeyValues;	Llm,Net
 org/springframework/ai/tool/observation/ToolCallingContentObservationFilter.map(Lio/micrometer/observation/Observation$Context;)Lio/micrometer/observation/Observation$Context;	Llm,Net
-org/springframework/ai/tool/observation/ToolCallingObservationContext$Builder.build()Lorg/springframework/ai/tool/observation/ToolCallingObservationContext;	Llm,Net
 org/springframework/ai/tool/observation/ToolCallingObservationContext.builder()Lorg/springframework/ai/tool/observation/ToolCallingObservationContext$Builder;	Llm,Net
 org/springframework/ai/tool/resolution/DelegatingToolCallbackResolver.resolve(Ljava/lang/String;)Lorg/springframework/ai/tool/ToolCallback;	Llm,Net
 org/springframework/ai/tool/resolution/SpringBeanToolCallbackResolver.resolve(Ljava/lang/String;)Lorg/springframework/ai/tool/ToolCallback;	Llm,Log,Net
@@ -33757,7 +33735,7 @@ org/springframework/amqp/rabbit/core/RabbitMessagingTemplate.sendAndReceive(Ljav
 org/springframework/amqp/rabbit/core/RabbitOperations.send(Ljava/lang/String;Lorg/springframework/amqp/core/Message;Lorg/springframework/amqp/rabbit/connection/CorrelationData;)V	Clock,Log,Net
 org/springframework/amqp/rabbit/core/RabbitOperations.stop()V	Log
 org/springframework/amqp/rabbit/core/RabbitTemplate.<init>()V	Net,Rand
-org/springframework/amqp/rabbit/core/RabbitTemplate.<init>(Lorg/springframework/amqp/rabbit/connection/ConnectionFactory;)V	Net,Rand
+org/springframework/amqp/rabbit/core/RabbitTemplate.<init>(Lorg/springframework/amqp/rabbit/connection/ConnectionFactory;)V	Rand
 org/springframework/amqp/rabbit/core/RabbitTemplate.addListener(Lcom/rabbitmq/client/Channel;)V	Log
 org/springframework/amqp/rabbit/core/RabbitTemplate.convertAndSend(Ljava/lang/Object;)V	Clock,Log,Net
 org/springframework/amqp/rabbit/core/RabbitTemplate.convertAndSend(Ljava/lang/Object;Lorg/springframework/amqp/core/MessagePostProcessor;)V	Clock,Log,Net
@@ -35886,7 +35864,6 @@ org/springframework/data/cassandra/core/CassandraAdminTemplate.execute(Lcom/data
 org/springframework/data/cassandra/core/CassandraAdminTemplate.exists(Ljava/lang/Object;Ljava/lang/Class;)Z	Db,Log
 org/springframework/data/cassandra/core/CassandraAdminTemplate.exists(Lorg/springframework/data/cassandra/core/query/Query;Ljava/lang/Class;)Z	Db,Log
 org/springframework/data/cassandra/core/CassandraAdminTemplate.getProjectionFactory()Lorg/springframework/data/projection/SpelAwareProxyProjectionFactory;	Db
-org/springframework/data/cassandra/core/CassandraAdminTemplate.getTableName(Ljava/lang/Class;)Lcom/datastax/oss/driver/api/core/CqlIdentifier;	Db
 org/springframework/data/cassandra/core/CassandraAdminTemplate.insert(Ljava/lang/Object;)Ljava/lang/Object;	Clock,Db,Log
 org/springframework/data/cassandra/core/CassandraAdminTemplate.insert(Ljava/lang/Object;Lorg/springframework/data/cassandra/core/InsertOptions;)Lorg/springframework/data/cassandra/core/EntityWriteResult;	Clock,Db,Log
 org/springframework/data/cassandra/core/CassandraAdminTemplate.select(Lcom/datastax/oss/driver/api/core/cql/Statement;Ljava/lang/Class;)Ljava/util/List;	Clock,Db,Log
@@ -35896,7 +35873,6 @@ org/springframework/data/cassandra/core/CassandraAdminTemplate.selectOne(Lcom/da
 org/springframework/data/cassandra/core/CassandraAdminTemplate.selectOne(Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/Object;	Clock,Db,Log
 org/springframework/data/cassandra/core/CassandraAdminTemplate.selectOne(Lorg/springframework/data/cassandra/core/query/Query;Ljava/lang/Class;)Ljava/lang/Object;	Clock,Db,Log
 org/springframework/data/cassandra/core/CassandraAdminTemplate.selectOneById(Ljava/lang/Object;Ljava/lang/Class;)Ljava/lang/Object;	Clock,Db,Log
-org/springframework/data/cassandra/core/CassandraAdminTemplate.setApplicationContext(Lorg/springframework/context/ApplicationContext;)V	Db
 org/springframework/data/cassandra/core/CassandraAdminTemplate.slice(Lcom/datastax/oss/driver/api/core/cql/Statement;Ljava/lang/Class;)Lorg/springframework/data/domain/Slice;	Clock,Db,Log
 org/springframework/data/cassandra/core/CassandraAdminTemplate.slice(Lorg/springframework/data/cassandra/core/query/Query;Ljava/lang/Class;)Lorg/springframework/data/domain/Slice;	Clock,Db,Log
 org/springframework/data/cassandra/core/CassandraAdminTemplate.stream(Lcom/datastax/oss/driver/api/core/cql/Statement;Ljava/lang/Class;)Ljava/util/stream/Stream;	Clock,Db,Log
@@ -35922,7 +35898,6 @@ org/springframework/data/cassandra/core/CassandraTemplate.execute(Lcom/datastax/
 org/springframework/data/cassandra/core/CassandraTemplate.exists(Ljava/lang/Object;Ljava/lang/Class;)Z	Db,Log
 org/springframework/data/cassandra/core/CassandraTemplate.exists(Lorg/springframework/data/cassandra/core/query/Query;Ljava/lang/Class;)Z	Db,Log
 org/springframework/data/cassandra/core/CassandraTemplate.getProjectionFactory()Lorg/springframework/data/projection/SpelAwareProxyProjectionFactory;	Db
-org/springframework/data/cassandra/core/CassandraTemplate.getTableName(Ljava/lang/Class;)Lcom/datastax/oss/driver/api/core/CqlIdentifier;	Db
 org/springframework/data/cassandra/core/CassandraTemplate.insert(Ljava/lang/Object;)Ljava/lang/Object;	Clock,Db,Log
 org/springframework/data/cassandra/core/CassandraTemplate.insert(Ljava/lang/Object;Lorg/springframework/data/cassandra/core/InsertOptions;)Lorg/springframework/data/cassandra/core/EntityWriteResult;	Clock,Db,Log
 org/springframework/data/cassandra/core/CassandraTemplate.select(Lcom/datastax/oss/driver/api/core/cql/Statement;Ljava/lang/Class;)Ljava/util/List;	Clock,Db,Log
@@ -35932,7 +35907,6 @@ org/springframework/data/cassandra/core/CassandraTemplate.selectOne(Lcom/datasta
 org/springframework/data/cassandra/core/CassandraTemplate.selectOne(Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/Object;	Clock,Db,Log
 org/springframework/data/cassandra/core/CassandraTemplate.selectOne(Lorg/springframework/data/cassandra/core/query/Query;Ljava/lang/Class;)Ljava/lang/Object;	Clock,Db,Log
 org/springframework/data/cassandra/core/CassandraTemplate.selectOneById(Ljava/lang/Object;Ljava/lang/Class;)Ljava/lang/Object;	Clock,Db,Log
-org/springframework/data/cassandra/core/CassandraTemplate.setApplicationContext(Lorg/springframework/context/ApplicationContext;)V	Db
 org/springframework/data/cassandra/core/CassandraTemplate.slice(Lcom/datastax/oss/driver/api/core/cql/Statement;Ljava/lang/Class;)Lorg/springframework/data/domain/Slice;	Clock,Db,Log
 org/springframework/data/cassandra/core/CassandraTemplate.slice(Lorg/springframework/data/cassandra/core/query/Query;Ljava/lang/Class;)Lorg/springframework/data/domain/Slice;	Clock,Db,Log
 org/springframework/data/cassandra/core/CassandraTemplate.stream(Lcom/datastax/oss/driver/api/core/cql/Statement;Ljava/lang/Class;)Ljava/util/stream/Stream;	Clock,Db,Log
@@ -36601,7 +36575,6 @@ org/springframework/data/couchbase/repository/support/BasicQuery.buildQueryOptio
 org/springframework/data/couchbase/repository/support/CouchbaseRepositoryFactory.getRepository(Ljava/lang/Class;)Ljava/lang/Object;	Log
 org/springframework/data/couchbase/repository/support/CouchbaseRepositoryFactory.getRepository(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;	Log
 org/springframework/data/couchbase/repository/support/CouchbaseRepositoryFactory.getRepository(Ljava/lang/Class;Lorg/springframework/data/repository/core/support/RepositoryComposition$RepositoryFragments;)Ljava/lang/Object;	Log
-org/springframework/data/couchbase/repository/support/CouchbaseRepositoryFactory.getTargetRepository(Lorg/springframework/data/repository/core/RepositoryInformation;)Ljava/lang/Object;	Db
 org/springframework/data/couchbase/repository/support/CouchbaseRepositoryFactoryBean.afterPropertiesSet()V	Log
 org/springframework/data/couchbase/repository/support/DynamicInvocationHandler.<init>(Ljava/lang/Object;Lcom/couchbase/client/java/CommonOptions;Ljava/lang/String;Ljava/lang/String;)V	Db
 org/springframework/data/couchbase/repository/support/DynamicInvocationHandler.invoke(Ljava/lang/Object;Ljava/lang/reflect/Method;[Ljava/lang/Object;)Ljava/lang/Object;	Db
@@ -36619,7 +36592,6 @@ org/springframework/data/couchbase/repository/support/QuerydslCouchbasePredicate
 org/springframework/data/couchbase/repository/support/ReactiveCouchbaseRepositoryFactory.getRepository(Ljava/lang/Class;)Ljava/lang/Object;	Log
 org/springframework/data/couchbase/repository/support/ReactiveCouchbaseRepositoryFactory.getRepository(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;	Log
 org/springframework/data/couchbase/repository/support/ReactiveCouchbaseRepositoryFactory.getRepository(Ljava/lang/Class;Lorg/springframework/data/repository/core/support/RepositoryComposition$RepositoryFragments;)Ljava/lang/Object;	Log
-org/springframework/data/couchbase/repository/support/ReactiveCouchbaseRepositoryFactory.getTargetRepository(Lorg/springframework/data/repository/core/RepositoryInformation;)Ljava/lang/Object;	Db
 org/springframework/data/couchbase/repository/support/ReactiveCouchbaseRepositoryFactoryBean.afterPropertiesSet()V	Log
 org/springframework/data/couchbase/repository/support/SimpleCouchbaseRepository.count()J	Db
 org/springframework/data/couchbase/repository/support/SimpleCouchbaseRepository.delete(Ljava/lang/Object;)V	Db
@@ -37539,12 +37511,10 @@ org/springframework/data/mongodb/repository/query/StringBasedMongoQuery.createQu
 org/springframework/data/mongodb/repository/support/MongoRepositoryFactory.getRepository(Ljava/lang/Class;)Ljava/lang/Object;	Log
 org/springframework/data/mongodb/repository/support/MongoRepositoryFactory.getRepository(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;	Log
 org/springframework/data/mongodb/repository/support/MongoRepositoryFactory.getRepository(Ljava/lang/Class;Lorg/springframework/data/repository/core/support/RepositoryComposition$RepositoryFragments;)Ljava/lang/Object;	Log
-org/springframework/data/mongodb/repository/support/MongoRepositoryFactory.getTargetRepository(Lorg/springframework/data/repository/core/RepositoryInformation;)Ljava/lang/Object;	Db
 org/springframework/data/mongodb/repository/support/MongoRepositoryFactoryBean.afterPropertiesSet()V	Log
 org/springframework/data/mongodb/repository/support/ReactiveMongoRepositoryFactory.getRepository(Ljava/lang/Class;)Ljava/lang/Object;	Log
 org/springframework/data/mongodb/repository/support/ReactiveMongoRepositoryFactory.getRepository(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;	Log
 org/springframework/data/mongodb/repository/support/ReactiveMongoRepositoryFactory.getRepository(Ljava/lang/Class;Lorg/springframework/data/repository/core/support/RepositoryComposition$RepositoryFragments;)Ljava/lang/Object;	Log
-org/springframework/data/mongodb/repository/support/ReactiveMongoRepositoryFactory.getTargetRepository(Lorg/springframework/data/repository/core/RepositoryInformation;)Ljava/lang/Object;	Db
 org/springframework/data/mongodb/repository/support/ReactiveMongoRepositoryFactoryBean.afterPropertiesSet()V	Log
 org/springframework/data/mongodb/repository/support/SimpleMongoRepository.count()J	Db
 org/springframework/data/mongodb/repository/support/SimpleMongoRepository.count(Lorg/springframework/data/domain/Example;)J	Db
@@ -42895,13 +42865,7 @@ org/springframework/data/redis/core/RedisOperations.expire(Ljava/lang/Object;Lja
 org/springframework/data/redis/core/RedisOperations.expireAt(Ljava/lang/Object;Ljava/time/Instant;)Ljava/lang/Boolean;	Db
 org/springframework/data/redis/core/RedisOperations.restore(Ljava/lang/Object;[BJLjava/util/concurrent/TimeUnit;)V	Db
 org/springframework/data/redis/core/RedisTemplate.<init>()V	Db,Log
-org/springframework/data/redis/core/RedisTemplate.boundGeoOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundGeoOperations;	Db
 org/springframework/data/redis/core/RedisTemplate.boundHashOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundHashOperations;	Db
-org/springframework/data/redis/core/RedisTemplate.boundListOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundListOperations;	Db
-org/springframework/data/redis/core/RedisTemplate.boundSetOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundSetOperations;	Db
-org/springframework/data/redis/core/RedisTemplate.boundStreamOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundStreamOperations;	Db
-org/springframework/data/redis/core/RedisTemplate.boundValueOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundValueOperations;	Db
-org/springframework/data/redis/core/RedisTemplate.boundZSetOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundZSetOperations;	Db
 org/springframework/data/redis/core/RedisTemplate.convertAndSend(Ljava/lang/String;Ljava/lang/Object;)Ljava/lang/Long;	Db,Log
 org/springframework/data/redis/core/RedisTemplate.copy(Ljava/lang/Object;Ljava/lang/Object;Z)Ljava/lang/Boolean;	Db,Log
 org/springframework/data/redis/core/RedisTemplate.countExistingKeys(Ljava/util/Collection;)Ljava/lang/Long;	Db,Log
@@ -42979,13 +42943,7 @@ org/springframework/data/redis/core/StreamOperations.reverseRange(Ljava/lang/Cla
 org/springframework/data/redis/core/StreamOperations.reverseRange(Ljava/lang/Object;Lorg/springframework/data/domain/Range;)Ljava/util/List;	Db
 org/springframework/data/redis/core/StringRedisTemplate.<init>()V	Db,Log
 org/springframework/data/redis/core/StringRedisTemplate.<init>(Lorg/springframework/data/redis/connection/RedisConnectionFactory;)V	Db,Log
-org/springframework/data/redis/core/StringRedisTemplate.boundGeoOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundGeoOperations;	Db
 org/springframework/data/redis/core/StringRedisTemplate.boundHashOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundHashOperations;	Db
-org/springframework/data/redis/core/StringRedisTemplate.boundListOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundListOperations;	Db
-org/springframework/data/redis/core/StringRedisTemplate.boundSetOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundSetOperations;	Db
-org/springframework/data/redis/core/StringRedisTemplate.boundStreamOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundStreamOperations;	Db
-org/springframework/data/redis/core/StringRedisTemplate.boundValueOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundValueOperations;	Db
-org/springframework/data/redis/core/StringRedisTemplate.boundZSetOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundZSetOperations;	Db
 org/springframework/data/redis/core/StringRedisTemplate.convertAndSend(Ljava/lang/String;Ljava/lang/Object;)Ljava/lang/Long;	Db,Log
 org/springframework/data/redis/core/StringRedisTemplate.copy(Ljava/lang/Object;Ljava/lang/Object;Z)Ljava/lang/Boolean;	Db,Log
 org/springframework/data/redis/core/StringRedisTemplate.countExistingKeys(Ljava/util/Collection;)Ljava/lang/Long;	Db,Log
@@ -49554,9 +49512,9 @@ org/springframework/vault/client/ReactiveVaultClients.namespace(Ljava/lang/Strin
 org/springframework/vault/client/RestTemplateBuilder.build()Lorg/springframework/web/client/RestTemplate;	Clock,Fs,Net
 org/springframework/vault/client/RestTemplateBuilder.builder()Lorg/springframework/vault/client/RestTemplateBuilder;	Log
 org/springframework/vault/client/RestTemplateBuilder.createTemplate()Lorg/springframework/web/client/RestTemplate;	Clock,Fs,Net
-org/springframework/vault/client/VaultClients.createRestTemplate()Lorg/springframework/web/client/RestTemplate;	Clock,Fs,Net
-org/springframework/vault/client/VaultClients.createRestTemplate(Lorg/springframework/vault/client/VaultEndpoint;Lorg/springframework/http/client/ClientHttpRequestFactory;)Lorg/springframework/web/client/RestTemplate;	Clock,Fs,Net
-org/springframework/vault/client/VaultClients.createRestTemplate(Lorg/springframework/vault/client/VaultEndpointProvider;Lorg/springframework/http/client/ClientHttpRequestFactory;)Lorg/springframework/web/client/RestTemplate;	Clock,Fs,Net
+org/springframework/vault/client/VaultClients.createRestTemplate()Lorg/springframework/web/client/RestTemplate;	Clock,Fs
+org/springframework/vault/client/VaultClients.createRestTemplate(Lorg/springframework/vault/client/VaultEndpoint;Lorg/springframework/http/client/ClientHttpRequestFactory;)Lorg/springframework/web/client/RestTemplate;	Clock,Fs
+org/springframework/vault/client/VaultClients.createRestTemplate(Lorg/springframework/vault/client/VaultEndpointProvider;Lorg/springframework/http/client/ClientHttpRequestFactory;)Lorg/springframework/web/client/RestTemplate;	Clock,Fs
 org/springframework/vault/client/VaultResponses.<init>()V	Clock
 org/springframework/vault/client/VaultResponses.buildException(Lorg/springframework/http/HttpStatusCode;Ljava/lang/String;Ljava/lang/String;)Lorg/springframework/vault/VaultException;	Clock
 org/springframework/vault/client/VaultResponses.buildException(Lorg/springframework/web/client/HttpStatusCodeException;)Lorg/springframework/vault/VaultException;	Clock
@@ -49635,9 +49593,9 @@ org/springframework/vault/core/VaultTemplate.<init>(Lorg/springframework/vault/c
 org/springframework/vault/core/VaultTemplate.<init>(Lorg/springframework/vault/client/VaultEndpointProvider;Lorg/springframework/http/client/ClientHttpRequestFactory;Lorg/springframework/vault/authentication/SessionManager;)V	Clock,Fs,Log,Net
 org/springframework/vault/core/VaultTemplate.doCreateRestTemplate(Lorg/springframework/vault/client/VaultEndpointProvider;Lorg/springframework/http/client/ClientHttpRequestFactory;)Lorg/springframework/web/client/RestTemplate;	Clock,Fs,Log,Net
 org/springframework/vault/core/VaultTemplate.doCreateSessionTemplate(Lorg/springframework/vault/client/VaultEndpointProvider;Lorg/springframework/http/client/ClientHttpRequestFactory;)Lorg/springframework/web/client/RestTemplate;	Clock,Fs,Log,Net
-org/springframework/vault/core/VaultTemplate.opsForKeyValue(Ljava/lang/String;Lorg/springframework/vault/core/VaultKeyValueOperationsSupport$KeyValueBackend;)Lorg/springframework/vault/core/VaultKeyValueOperations;	Clock,Net
-org/springframework/vault/core/VaultTemplate.opsForVersionedKeyValue(Ljava/lang/String;)Lorg/springframework/vault/core/VaultVersionedKeyValueOperations;	Clock,Net
-org/springframework/vault/core/VaultVersionedKeyValueTemplate.<init>(Lorg/springframework/vault/core/VaultOperations;Ljava/lang/String;)V	Clock,Net
+org/springframework/vault/core/VaultTemplate.opsForKeyValue(Ljava/lang/String;Lorg/springframework/vault/core/VaultKeyValueOperationsSupport$KeyValueBackend;)Lorg/springframework/vault/core/VaultKeyValueOperations;	Clock
+org/springframework/vault/core/VaultTemplate.opsForVersionedKeyValue(Ljava/lang/String;)Lorg/springframework/vault/core/VaultVersionedKeyValueOperations;	Clock
+org/springframework/vault/core/VaultVersionedKeyValueTemplate.<init>(Lorg/springframework/vault/core/VaultOperations;Ljava/lang/String;)V	Clock
 org/springframework/vault/core/env/LeaseAwareVaultPropertySource.<init>(Ljava/lang/String;Lorg/springframework/vault/core/lease/SecretLeaseContainer;Lorg/springframework/vault/core/lease/domain/RequestedSecret;)V	Clock,Log
 org/springframework/vault/core/env/LeaseAwareVaultPropertySource.<init>(Ljava/lang/String;Lorg/springframework/vault/core/lease/SecretLeaseContainer;Lorg/springframework/vault/core/lease/domain/RequestedSecret;Lorg/springframework/vault/core/util/PropertyTransformer;)V	Clock,Log
 org/springframework/vault/core/env/LeaseAwareVaultPropertySource.<init>(Ljava/lang/String;Lorg/springframework/vault/core/lease/SecretLeaseContainer;Lorg/springframework/vault/core/lease/domain/RequestedSecret;Lorg/springframework/vault/core/util/PropertyTransformer;Z)V	Clock,Log
@@ -49750,8 +49708,8 @@ org/springframework/web/client/HttpMessageConverterExtractor.getContentType(Lorg
 org/springframework/web/client/RestClient.builder(Lorg/springframework/web/client/RestTemplate;)Lorg/springframework/web/client/RestClient$Builder;	Net
 org/springframework/web/client/RestClient.create()Lorg/springframework/web/client/RestClient;	Clock,Fs
 org/springframework/web/client/RestClient.create(Lorg/springframework/web/client/RestTemplate;)Lorg/springframework/web/client/RestClient;	Clock,Fs,Net
-org/springframework/web/client/RestTemplate.<init>()V	Clock,Fs,Net
-org/springframework/web/client/RestTemplate.<init>(Lorg/springframework/http/client/ClientHttpRequestFactory;)V	Clock,Fs,Net
+org/springframework/web/client/RestTemplate.<init>()V	Clock,Fs
+org/springframework/web/client/RestTemplate.<init>(Lorg/springframework/http/client/ClientHttpRequestFactory;)V	Clock,Fs
 org/springframework/web/client/RestTemplate.createRequest(Ljava/net/URI;Lorg/springframework/http/HttpMethod;)Lorg/springframework/http/client/ClientHttpRequest;	Log
 org/springframework/web/client/RestTemplate.delete(Ljava/lang/String;Ljava/util/Map;)V	Log,Net
 org/springframework/web/client/RestTemplate.delete(Ljava/lang/String;[Ljava/lang/Object;)V	Log,Net
@@ -49803,8 +49761,8 @@ org/springframework/web/client/support/RestClientAdapter.exchangeForBodilessEnti
 org/springframework/web/client/support/RestClientAdapter.exchangeForBody(Lorg/springframework/web/service/invoker/HttpRequestValues;Lorg/springframework/core/ParameterizedTypeReference;)Ljava/lang/Object;	Net
 org/springframework/web/client/support/RestClientAdapter.exchangeForEntity(Lorg/springframework/web/service/invoker/HttpRequestValues;Lorg/springframework/core/ParameterizedTypeReference;)Lorg/springframework/http/ResponseEntity;	Net
 org/springframework/web/client/support/RestClientAdapter.exchangeForHeaders(Lorg/springframework/web/service/invoker/HttpRequestValues;)Lorg/springframework/http/HttpHeaders;	Net
-org/springframework/web/client/support/RestGatewaySupport.<init>()V	Clock,Fs,Net
-org/springframework/web/client/support/RestGatewaySupport.<init>(Lorg/springframework/http/client/ClientHttpRequestFactory;)V	Clock,Fs,Net
+org/springframework/web/client/support/RestGatewaySupport.<init>()V	Clock,Fs
+org/springframework/web/client/support/RestGatewaySupport.<init>(Lorg/springframework/http/client/ClientHttpRequestFactory;)V	Clock,Fs
 org/springframework/web/client/support/RestTemplateAdapter.exchange(Lorg/springframework/web/service/invoker/HttpRequestValues;)V	Log,Net
 org/springframework/web/client/support/RestTemplateAdapter.exchangeForBodilessEntity(Lorg/springframework/web/service/invoker/HttpRequestValues;)Lorg/springframework/http/ResponseEntity;	Log,Net
 org/springframework/web/client/support/RestTemplateAdapter.exchangeForBody(Lorg/springframework/web/service/invoker/HttpRequestValues;Lorg/springframework/core/ParameterizedTypeReference;)Ljava/lang/Object;	Log,Net

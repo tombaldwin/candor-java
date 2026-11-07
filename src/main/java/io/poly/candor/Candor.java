@@ -6192,9 +6192,11 @@ public class Candor {
     static void discloseFrameworkHedge(AnalysisContext ctx, String id, String kind, String internalOwner, String name,
             String desc, String spelling) {
         ctx.direct.get(id).add(Effect.UNKNOWN);
+        // SOUNDNESS R1468 — a `C` member names the dispatch inside its closure the table could not follow.
+        String target = kind.equals("C") ? FrameworkReach.closureTarget(internalOwner, name, desc) : null;
         ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(
-                kind.equals("A") ? UnknownReason.Kind.DISPATCH : UnknownReason.Kind.DEP,
-                internalOwner.replace('/', '.') + "." + name));
+                kind.equals("A") || kind.equals("C") ? UnknownReason.Kind.DISPATCH : UnknownReason.Kind.DEP,
+                target != null ? target : internalOwner.replace('/', '.') + "." + name));
         if (FWREACH_DEBUG) System.err.println("FWHEDGE\t" + kind + "\t" + id + "\t" + spelling + "\t"
                 + internalOwner + "." + name + desc);
     }

@@ -118,7 +118,19 @@ fixed in the leaf; the table inherits the fix by regeneration.
   `resolveDestination()` — dropping it removed the row and `RabbitMessageOperations.receiveAndConvert`'s `A`
   hedge. A body whose closure reaches such an unfollowable dispatch keeps the rule's charge (81 bodies).
   RestTemplate's three constructors are also carved out of its whole-owner rule by hand (javap: they only
-  allocate); `new RestTemplate()` and `(ClientHttpRequestFactory)` keep `Net` in the table by 5a.
+  allocate).
+* **The 5a stand-in is a charge only where the hidden dispatch can perform it (SOUNDNESS R1468).** Put back
+  unconditionally, step 5a charged `new RestTemplate()` `Net` — EXECUTED, no connection on spring-web 5.3.39 or
+  6.1.10 — because its converter set-up reaches a dispatch the table cannot follow, and 100 (member, effect) pairs had
+  only that stand-in as their charge. The generator now records, per body, the concrete effects
+  of the surveyed implementers of the unfollowable dispatches in its closure, and keeps the rule's charge only where one
+  of them carries it (RabbitMessagingTemplate.receiveAndConvert: EXECUTED, it connects; pinned by
+  `OpaqueClosureStandInR1468Test`). Elsewhere the member gets a `C` line naming an unfollowable member of its closure,
+  and the engine discloses `Unknown[dispatch:<that member>]` at the call, beside a charge or alone. A disclosed stand-in
+  still counts as unvouched everywhere a charged one did (A lines, the P fixed point, BROAD, O lines).
+  `Llm` is a label no body performs, so a model request whose body is charged `Net` keeps a stand-in `Llm`. Measured:
+  75 pairs removed (Net 33, Llm 22, Db 20; 39 `C` lines, 14 `U` lines where the member's bodies now read only
+  `Unknown`), 25 kept; every removal executed or read as performing nothing at that call (R1468 lane evidence).
 
 The residual is the table's own: a P line is a claim about the body the JVM resolves in the SURVEYED version, not
 an override shipped in another jar (a PROJECT override is still reached by CHA — pinned in

@@ -5,7 +5,7 @@
 # NAMED MISS: the closure stops at the JDK, which is OPAQUE here (no bodies; only the classifier's name rules),
 # while framework bodies are TRANSPARENT. A framework member whose effect happens inside a JDK body the
 # classifier leaves uncharged is missed exactly as a direct call to that JDK member is (R814 is that frontier).
-# generator-sha256 e64d78ce677f22d280e1c6d31f6b281330369713253fd140fabcb61740dc4e80
+# generator-sha256 27c44cba54474ef2a744fa01f7e9420a39eb391d1528e60c5540613d57e2696f
 # source org.jetbrains:annotations:24.1.0 27a770dc7ce50500918bb8c3c0660c98290630ec796b5e3cf6b90f403b3033c6
 # source aopalliance:aopalliance:1.0 0addec670fedcd3f113c5c8091d783280d23f75e3acb841b61a9cdb079376a08
 # source software.amazon.awssdk:auth:2.25.60 0a9a569060d287f069c61eaefcad6e5e423fb048f0f7198d3825b7f3d6823258
@@ -130,8 +130,10 @@
 # P = a member a NAME rule charges whose surveyed body is a proven-pure field accessor (R1052).
 # O = a public member overridden in ANOTHER surveyed jar by a body that can do more than the row says;
 #     the overriding classes follow (R1097). See FrameworkReach#crossJarOverriders.
-# entries 120918
-# content-sha256 aad56f100f8752f1c307fac2b4bbdaaa38f79a8d4cadbe289ffd3b53f0c43609
+# C = a member whose closure reaches a dispatch the table cannot follow, where a NAME rule's charge used to
+#     stand in for it and no surveyed implementer carries that effect; the unfollowed member follows (R1468).
+# entries 120971
+# content-sha256 2dd398445299e05f2c7d5251d10f01bf449370282816f0ca021d2e28d4381733
 A	com/fasterxml/jackson/annotation/JacksonInject.useInput()Lcom/fasterxml/jackson/annotation/OptBoolean;
 A	com/fasterxml/jackson/annotation/JacksonInject.value()Ljava/lang/String;
 A	com/fasterxml/jackson/annotation/JsonAlias.value()[Ljava/lang/String;
@@ -38069,6 +38071,45 @@ A	software/amazon/awssdk/auth/credentials/ProfileCredentialsProvider$Builder.bui
 A	software/amazon/awssdk/auth/credentials/ProfileCredentialsProviderFactory.create(Lsoftware/amazon/awssdk/auth/credentials/ProfileProviderCredentialsContext;)Lsoftware/amazon/awssdk/auth/credentials/AwsCredentialsProvider;
 A	software/amazon/awssdk/auth/credentials/WebIdentityTokenCredentialsProviderFactory.create(Lsoftware/amazon/awssdk/auth/credentials/internal/WebIdentityTokenCredentialProperties;)Lsoftware/amazon/awssdk/auth/credentials/AwsCredentialsProvider;
 A	software/amazon/awssdk/auth/credentials/WebIdentityTokenFileCredentialsProvider$Builder.build()Lsoftware/amazon/awssdk/auth/credentials/WebIdentityTokenFileCredentialsProvider;
+C	org/springframework/ai/chat/client/advisor/observation/DefaultAdvisorObservationConvention.advisorName(Lorg/springframework/ai/chat/client/advisor/observation/AdvisorObservationContext;)Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/chat/client/advisor/observation/DefaultAdvisorObservationConvention.advisorOrder(Lorg/springframework/ai/chat/client/advisor/observation/AdvisorObservationContext;)Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/chat/client/advisor/observation/DefaultAdvisorObservationConvention.aiOperationType(Lorg/springframework/ai/chat/client/advisor/observation/AdvisorObservationContext;)Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/chat/client/advisor/observation/DefaultAdvisorObservationConvention.aiProvider(Lorg/springframework/ai/chat/client/advisor/observation/AdvisorObservationContext;)Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/chat/client/advisor/observation/DefaultAdvisorObservationConvention.springAiKind()Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/chat/client/observation/ChatClientObservationContext$Builder.build()Lorg/springframework/ai/chat/client/observation/ChatClientObservationContext;	io.micrometer.observation.Observation$Context.<init>
+C	org/springframework/ai/chat/client/observation/DefaultChatClientObservationConvention.aiOperationType(Lorg/springframework/ai/chat/client/observation/ChatClientObservationContext;)Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/chat/client/observation/DefaultChatClientObservationConvention.aiProvider(Lorg/springframework/ai/chat/client/observation/ChatClientObservationContext;)Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/chat/client/observation/DefaultChatClientObservationConvention.springAiKind()Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/chat/client/observation/DefaultChatClientObservationConvention.stream(Lorg/springframework/ai/chat/client/observation/ChatClientObservationContext;)Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/chat/observation/DefaultChatModelObservationConvention.aiOperationType(Lorg/springframework/ai/chat/observation/ChatModelObservationContext;)Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/chat/observation/DefaultChatModelObservationConvention.aiProvider(Lorg/springframework/ai/chat/observation/ChatModelObservationContext;)Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/chat/observation/DefaultChatModelObservationConvention.responseModel(Lorg/springframework/ai/chat/observation/ChatModelObservationContext;)Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/embedding/observation/DefaultEmbeddingModelObservationConvention.aiOperationType(Lorg/springframework/ai/embedding/observation/EmbeddingModelObservationContext;)Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/embedding/observation/DefaultEmbeddingModelObservationConvention.aiProvider(Lorg/springframework/ai/embedding/observation/EmbeddingModelObservationContext;)Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/embedding/observation/DefaultEmbeddingModelObservationConvention.responseModel(Lorg/springframework/ai/embedding/observation/EmbeddingModelObservationContext;)Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/image/observation/DefaultImageModelObservationConvention.aiOperationType(Lorg/springframework/ai/image/observation/ImageModelObservationContext;)Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/image/observation/DefaultImageModelObservationConvention.aiProvider(Lorg/springframework/ai/image/observation/ImageModelObservationContext;)Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/tool/observation/DefaultToolCallingObservationConvention.aiOperationType(Lorg/springframework/ai/tool/observation/ToolCallingObservationContext;)Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/tool/observation/DefaultToolCallingObservationConvention.aiProvider(Lorg/springframework/ai/tool/observation/ToolCallingObservationContext;)Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/tool/observation/DefaultToolCallingObservationConvention.springAiKind(Lorg/springframework/ai/tool/observation/ToolCallingObservationContext;)Lio/micrometer/common/KeyValue;	io.micrometer.common.KeyValue.of
+C	org/springframework/ai/tool/observation/ToolCallingObservationContext$Builder.build()Lorg/springframework/ai/tool/observation/ToolCallingObservationContext;	io.micrometer.observation.Observation$Context.<init>
+C	org/springframework/amqp/rabbit/core/RabbitTemplate.<init>(Lorg/springframework/amqp/rabbit/connection/ConnectionFactory;)V	org.springframework.expression.TypedValue.<init>
+C	org/springframework/data/cassandra/core/CassandraAdminTemplate.setApplicationContext(Lorg/springframework/context/ApplicationContext;)V	org.springframework.beans.factory.BeanFactory.getBeanProvider
+C	org/springframework/data/cassandra/core/CassandraTemplate.setApplicationContext(Lorg/springframework/context/ApplicationContext;)V	org.springframework.beans.factory.BeanFactory.getBeanProvider
+C	org/springframework/data/couchbase/repository/support/CouchbaseRepositoryFactory.getTargetRepository(Lorg/springframework/data/repository/core/RepositoryInformation;)Ljava/lang/Object;	org.springframework.data.mapping.context.MappingContext.getPersistentEntity
+C	org/springframework/data/couchbase/repository/support/ReactiveCouchbaseRepositoryFactory.getTargetRepository(Lorg/springframework/data/repository/core/RepositoryInformation;)Ljava/lang/Object;	org.springframework.data.mapping.context.MappingContext.getPersistentEntity
+C	org/springframework/data/mongodb/repository/support/MongoRepositoryFactory.getTargetRepository(Lorg/springframework/data/repository/core/RepositoryInformation;)Ljava/lang/Object;	org.springframework.data.mapping.context.MappingContext.getPersistentEntity
+C	org/springframework/data/mongodb/repository/support/ReactiveMongoRepositoryFactory.getTargetRepository(Lorg/springframework/data/repository/core/RepositoryInformation;)Ljava/lang/Object;	org.springframework.data.mapping.context.MappingContext.getPersistentEntity
+C	org/springframework/vault/client/VaultClients.createRestTemplate()Lorg/springframework/web/client/RestTemplate;	com.fasterxml.jackson.databind.Module.setupModule
+C	org/springframework/vault/client/VaultClients.createRestTemplate(Lorg/springframework/vault/client/VaultEndpoint;Lorg/springframework/http/client/ClientHttpRequestFactory;)Lorg/springframework/web/client/RestTemplate;	com.fasterxml.jackson.databind.Module.setupModule
+C	org/springframework/vault/client/VaultClients.createRestTemplate(Lorg/springframework/vault/client/VaultEndpointProvider;Lorg/springframework/http/client/ClientHttpRequestFactory;)Lorg/springframework/web/client/RestTemplate;	com.fasterxml.jackson.databind.Module.setupModule
+C	org/springframework/vault/core/VaultTemplate.opsForKeyValue(Ljava/lang/String;Lorg/springframework/vault/core/VaultKeyValueOperationsSupport$KeyValueBackend;)Lorg/springframework/vault/core/VaultKeyValueOperations;	org.springframework.vault.core.VaultOperations.doWithSession
+C	org/springframework/vault/core/VaultTemplate.opsForVersionedKeyValue(Ljava/lang/String;)Lorg/springframework/vault/core/VaultVersionedKeyValueOperations;	org.springframework.vault.core.VaultOperations.doWithSession
+C	org/springframework/vault/core/VaultVersionedKeyValueTemplate.<init>(Lorg/springframework/vault/core/VaultOperations;Ljava/lang/String;)V	org.springframework.vault.core.VaultOperations.doWithSession
+C	org/springframework/web/client/RestTemplate.<init>()V	com.fasterxml.jackson.databind.Module.setupModule
+C	org/springframework/web/client/RestTemplate.<init>(Lorg/springframework/http/client/ClientHttpRequestFactory;)V	com.fasterxml.jackson.databind.Module.setupModule
+C	org/springframework/web/client/support/RestGatewaySupport.<init>()V	com.fasterxml.jackson.databind.Module.setupModule
+C	org/springframework/web/client/support/RestGatewaySupport.<init>(Lorg/springframework/http/client/ClientHttpRequestFactory;)V	com.fasterxml.jackson.databind.Module.setupModule
 J	com.sun.accessibility.internal.resources
 J	com.sun.beans
 J	com.sun.beans.decoder
@@ -108188,6 +108229,7 @@ U	org/springframework/data/cassandra/core/CassandraAdminTemplate.dropUserType(Lc
 U	org/springframework/data/cassandra/core/CassandraAdminTemplate.getKeyspaceMetadata()Lcom/datastax/oss/driver/api/core/metadata/schema/KeyspaceMetadata;
 U	org/springframework/data/cassandra/core/CassandraAdminTemplate.getTableMetadata(Lcom/datastax/oss/driver/api/core/CqlIdentifier;Lcom/datastax/oss/driver/api/core/CqlIdentifier;)Ljava/util/Optional;
 U	org/springframework/data/cassandra/core/CassandraAdminTemplate.getTableMetadata(Ljava/lang/String;Lcom/datastax/oss/driver/api/core/CqlIdentifier;)Ljava/util/Optional;
+U	org/springframework/data/cassandra/core/CassandraAdminTemplate.getTableName(Ljava/lang/Class;)Lcom/datastax/oss/driver/api/core/CqlIdentifier;
 U	org/springframework/data/cassandra/core/CassandraAdminTemplate.maybeEmitEvent(Ljava/util/function/Supplier;)V
 U	org/springframework/data/cassandra/core/CassandraBatchOperations.delete(Ljava/lang/Object;Lorg/springframework/data/cassandra/core/cql/WriteOptions;)Lorg/springframework/data/cassandra/core/CassandraBatchOperations;
 U	org/springframework/data/cassandra/core/CassandraBatchOperations.insert(Ljava/lang/Object;Lorg/springframework/data/cassandra/core/cql/WriteOptions;)Lorg/springframework/data/cassandra/core/CassandraBatchOperations;
@@ -108245,6 +108287,7 @@ U	org/springframework/data/cassandra/core/CassandraTemplate$PreparedStatementHan
 U	org/springframework/data/cassandra/core/CassandraTemplate$PreparedStatementHandler.bindValues(Lcom/datastax/oss/driver/api/core/cql/PreparedStatement;)Lcom/datastax/oss/driver/api/core/cql/BoundStatement;
 U	org/springframework/data/cassandra/core/CassandraTemplate.createPreparedStatementHandler(Lcom/datastax/oss/driver/api/core/cql/Statement;)Lorg/springframework/data/cassandra/core/CassandraTemplate$PreparedStatementHandler;
 U	org/springframework/data/cassandra/core/CassandraTemplate.delete(Ljava/lang/Object;Lorg/springframework/data/cassandra/core/DeleteOptions;)Lorg/springframework/data/cassandra/core/WriteResult;
+U	org/springframework/data/cassandra/core/CassandraTemplate.getTableName(Ljava/lang/Class;)Lcom/datastax/oss/driver/api/core/CqlIdentifier;
 U	org/springframework/data/cassandra/core/CassandraTemplate.maybeEmitEvent(Ljava/util/function/Supplier;)V
 U	org/springframework/data/cassandra/core/ExecutableSelectOperation$ExecutableSelect.first()Ljava/util/Optional;
 U	org/springframework/data/cassandra/core/ExecutableSelectOperation$ExecutableSelect.one()Ljava/util/Optional;
@@ -113437,6 +113480,12 @@ U	org/springframework/data/redis/core/RedisKeyValueTemplate.getMappingContext()L
 U	org/springframework/data/redis/core/RedisKeyValueTemplate.insert(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;
 U	org/springframework/data/redis/core/RedisKeyValueTemplate.update(Ljava/lang/Object;)Ljava/lang/Object;
 U	org/springframework/data/redis/core/RedisKeyValueTemplate.update(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;
+U	org/springframework/data/redis/core/RedisTemplate.boundGeoOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundGeoOperations;
+U	org/springframework/data/redis/core/RedisTemplate.boundListOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundListOperations;
+U	org/springframework/data/redis/core/RedisTemplate.boundSetOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundSetOperations;
+U	org/springframework/data/redis/core/RedisTemplate.boundStreamOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundStreamOperations;
+U	org/springframework/data/redis/core/RedisTemplate.boundValueOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundValueOperations;
+U	org/springframework/data/redis/core/RedisTemplate.boundZSetOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundZSetOperations;
 U	org/springframework/data/redis/core/RedisTemplate.createRedisConnectionProxy(Lorg/springframework/data/redis/connection/RedisConnection;)Lorg/springframework/data/redis/connection/RedisConnection;
 U	org/springframework/data/redis/core/RedisTemplate.execute(Lorg/springframework/data/redis/core/script/RedisScript;Ljava/util/List;[Ljava/lang/Object;)Ljava/lang/Object;
 U	org/springframework/data/redis/core/RedisTemplate.execute(Lorg/springframework/data/redis/core/script/RedisScript;Lorg/springframework/data/redis/serializer/RedisSerializer;Lorg/springframework/data/redis/serializer/RedisSerializer;Ljava/util/List;[Ljava/lang/Object;)Ljava/lang/Object;
@@ -113450,6 +113499,12 @@ U	org/springframework/data/redis/core/ScanCursor.open()Lorg/springframework/data
 U	org/springframework/data/redis/core/ScanOptions.toOptionString()Ljava/lang/String;
 U	org/springframework/data/redis/core/StreamOperations.map(Ljava/util/List;Ljava/lang/Class;)Ljava/util/List;
 U	org/springframework/data/redis/core/StreamOperations.map(Lorg/springframework/data/redis/connection/stream/MapRecord;Ljava/lang/Class;)Lorg/springframework/data/redis/connection/stream/ObjectRecord;
+U	org/springframework/data/redis/core/StringRedisTemplate.boundGeoOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundGeoOperations;
+U	org/springframework/data/redis/core/StringRedisTemplate.boundListOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundListOperations;
+U	org/springframework/data/redis/core/StringRedisTemplate.boundSetOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundSetOperations;
+U	org/springframework/data/redis/core/StringRedisTemplate.boundStreamOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundStreamOperations;
+U	org/springframework/data/redis/core/StringRedisTemplate.boundValueOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundValueOperations;
+U	org/springframework/data/redis/core/StringRedisTemplate.boundZSetOps(Ljava/lang/Object;)Lorg/springframework/data/redis/core/BoundZSetOperations;
 U	org/springframework/data/redis/core/StringRedisTemplate.createRedisConnectionProxy(Lorg/springframework/data/redis/connection/RedisConnection;)Lorg/springframework/data/redis/connection/RedisConnection;
 U	org/springframework/data/redis/core/StringRedisTemplate.execute(Lorg/springframework/data/redis/core/script/RedisScript;Ljava/util/List;[Ljava/lang/Object;)Ljava/lang/Object;
 U	org/springframework/data/redis/core/StringRedisTemplate.execute(Lorg/springframework/data/redis/core/script/RedisScript;Lorg/springframework/data/redis/serializer/RedisSerializer;Lorg/springframework/data/redis/serializer/RedisSerializer;Ljava/util/List;[Ljava/lang/Object;)Ljava/lang/Object;

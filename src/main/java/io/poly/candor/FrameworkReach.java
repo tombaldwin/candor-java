@@ -67,6 +67,10 @@ final class FrameworkReach {
      *  or native): which implementation runs is decided at run time, by code the table never read.</li>
      *  <li>{@code "U"} — every body it resolves to is one this engine's own scan of the framework could read only
      *  as {@code Unknown}.</li>
+     *  <li>{@code "C"} — SOUNDNESS R1468: the member's surveyed closure reaches a dispatch the table cannot follow
+     *  (an abstract member none of whose surveyed implementers carries the effect, or an unsurveyed owner), where a
+     *  NAME rule's charge used to stand in for it. Disclosed as {@code Unknown[dispatch:<that member>]}
+     *  ({@link #closureTarget}), beside a charge or alone — not charged with an effect the body may not perform.</li>
      *  <li>{@code "X"} — the owner is under a covered framework prefix but in no surveyed jar (e.g.
      *  {@code org.hibernate.criterion}, the {@code javax.*} APIs no jar here ships).</li></ul>
      *  Never for the JDK ({@code J} lines: soundness/kappa_table/jdk-packages.txt, JDK 21), the language runtimes
@@ -87,7 +91,7 @@ final class FrameworkReach {
         // was ever written for a charged member, so this reads only R1096's lines.
         if (!charges(internalOwner, name, desc).isEmpty()) {
             String k = h.get(key);
-            return "U".equals(k) || "A".equals(k) ? k : null;   // R1096: also a BROAD override fan-out the table disclosed
+            return "U".equals(k) || "A".equals(k) || "C".equals(k) ? k : null;   // R1096: also a BROAD override fan-out; R1468 C
         }
         String k = h.get(key);
         if (k != null) return k;
@@ -143,6 +147,17 @@ final class FrameworkReach {
         return l == null ? List.of() : l;
     }
 
+    // ── SOUNDNESS R1468 — a closure the table cannot follow, disclosed rather than charged with a rule's stand-in ─────
+    private static final Map<String, String> CLOSURE = new HashMap<>();
+
+    /** For a {@code C} member, the dispatch its surveyed closure reaches and the table cannot follow
+     *  ({@code owner.name}, dotted), which its {@code Unknown[dispatch:…]} names; otherwise null. */
+    static String closureTarget(String internalOwner, String name, String desc) {
+        if (DISABLED) return null;
+        if (hedge == null) loadHedge();
+        return CLOSURE.get(internalOwner + "." + name + desc);
+    }
+
     static boolean runtimeOrLogging(String internalName) {
         for (String p : new String[] { "kotlin/", "scala/", "groovy/", "org/codehaus/groovy/", "org/slf4j/",
                 "org/apache/commons/logging/", "org/apache/logging/", "ch/qos/logback/" })
@@ -166,6 +181,12 @@ final class FrameworkReach {
                     case "J" -> JDK_PKGS.add(v);
                     case "S" -> SURVEYED.add(v);
                     case "A", "U" -> m.put(v, kind);
+                    case "C" -> {      // SOUNDNESS R1468: key <TAB> the unfollowable member its closure reaches
+                        int t2 = v.indexOf('\t');
+                        if (t2 <= 0) throw new IllegalStateException("candor: " + HEDGE_RESOURCE + " bad line: " + line);
+                        m.put(v.substring(0, t2), kind);
+                        CLOSURE.put(v.substring(0, t2), v.substring(t2 + 1));
+                    }
                     case "P" -> PURE.add(v);
                     case "O" -> {      // SOUNDNESS R1097: key <TAB> overriding classes, comma-separated
                         int t2 = v.indexOf('\t');

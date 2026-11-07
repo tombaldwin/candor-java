@@ -3908,6 +3908,7 @@ wantnot "lambda remedy: a policy with no accept line gets no new text"          
 LRA="$("$CJ" accepts --report "$W/lr/rep.json" --policy "$W/lr/none.pol" --adopt --because t 2>&1 >/dev/null)"
 want    "lambda remedy: accepts names the creating function (returned)"          "$LRA" '`lx.N.lambda$ret$0` is keyed by POSITION and no `accept` line can cover it: it is created in `lx.N.ret`'
 want    "lambda remedy: accepts names the creating function (anonymous class)"   "$LRA" '`lx.A$1.go` is keyed by POSITION and no `accept` line can cover it: it is created in `lx.A.anon`'
+wantnot "lambda remedy: accepts does not splice two sentences (no 'written for `X` is keyed')" "$LRA" 'no accept line is written for `lx.'
 want    "lambda remedy: accepts gives the remedy that works"                     "$LRA" 'Remedy: move its body into a NAMED method and accept that, or run it where it is created.'
 LRJ="$("$CJ" accepts --report "$W/lr/rep.json" --policy "$W/lr/none.pol" --adopt --because t --json 2>&1 >/dev/null)"
 want    "lambda remedy: accepts --json carries the same text on the human channel" "$LRJ" 'it is created in `lx.N.field`'

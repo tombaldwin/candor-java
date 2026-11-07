@@ -514,7 +514,7 @@ final class Accepts {
             TreeSet<String> notes = new TreeSet<>(Query.BY_CODE_POINT);
             for (String f : pos) {
                 String n = Accept.uncoverableNote(f, callers);
-                if (n != null) notes.add("candor accepts: no accept line is written for " + n);
+                if (n != null) notes.add("candor accepts: " + n);
                 else if (advice.get(f) != null) notes.add(advice.get(f));
                 else rest.add(f);
             }

@@ -9,6 +9,20 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **⚠ Nine Spring members charged by an owner-wide rule they never perform now read as the table discloses them
+  (SOUNDNESS R1478).** `RedisTemplate.bound{Geo,List,Set,Stream,Value,ZSet}Ops` read `Db`,
+  `CassandraTemplate.getTableName`/`setApplicationContext` read `Db`, and `new RabbitTemplate(...)` read `Net`, at every
+  consumer call. Executed with spied driver handles and a connect-logging SecurityManager, none of them touches a driver or
+  opens a connection; the same objects' `get()`/`size()`/`add()`, `count()`/`truncate()` and `convertAndSend()` do. At a
+  consumer's call (table on) the rule now yields to the framework table, so these calls read `Unknown` (the member's U/C line:
+  `dispatch:` the hedged member) instead of the effect, and the later call on the returned handle keeps its charge.
+  `deny Db`/`deny Net` go 1→0 on a unit that only makes these calls; `deny Unknown` stays red there. A listed member the table
+  has no line for keeps the rule. The table itself does not change: library bodies keep the rule's charge, because removing
+  it from the classifier instead was measured moving seven spring-rabbit rows off `Net`, two of them real (logback/log4j2
+  `AmqpAppender.setUpExchangeDeclaration()` declares the exchange on the wire when the connection factory already holds a
+  connection). Not changed: `boundHashOps` (its table row reaches `Db` through the `RedisOperations` rule), the no-arg
+  `RabbitTemplate()` (table row `Net` through `initDefaultStrategies`), and the Spring AI observation getters. Surveying
+  spring-aop, spring-expression and micrometer was measured and is not part of this change: it clears none of these members.
 - **⚠ A proven-pure getter is no longer charged its owner's rule only because the type it returns is hedged (SOUNDNESS
   R1476).** The return-type guard on the `P` list kept a name rule's charge on a pure getter whenever any abstract member of
   the returned type was hedged; since the R1471 entry below hedges every implementer that carries `Unknown`, it put `Net` back

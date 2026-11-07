@@ -132,6 +132,49 @@ final class FrameworkReach {
         return pureOverride;
     }
 
+    // ── SOUNDNESS R1478 — owner-wide rules that yield to the table at a consumer's call, member by member ──────────────
+    /** {@code internalOwner.name} (every descriptor) of members an OWNER-WIDE classifier rule charges and which were
+     *  EXECUTED doing nothing at the call, while the table answers them with a disclosure (a U or C line) because their
+     *  closure reaches a dispatch it cannot follow. Hand-listed, not derived: R1478's lane measured the general form
+     *  ("drop the rule wherever no surveyed implementer of the opaque closure carries it") losing a reactive repository's
+     *  Db through an unsurveyed driver, and surveying the jars these closures stop at (spring-aop, spring-expression,
+     *  micrometer) was measured NOT to make them followable (Redis's proxy factory still reaches
+     *  AdvisedSupportListener.activated, Cassandra's mapping interfaces stay abstract). Each entry carries its execution:
+     *  <ul><li>RedisTemplate.bound{Geo,List,Set,Stream,Value,ZSet}Ops build a spring-aop proxy over the key, no driver
+     *  call; the Bound*Operations handed back is itself rule-charged (the {@code *Operations} rule), so {@code .get()},
+     *  {@code .size()}, {@code .add()} keep Db and each was executed opening a connection. {@code boundHashOps} is NOT
+     *  listed: its own table row reaches Db through the {@code RedisOperations.opsForHash()} rule in its lambda.</li>
+     *  <li>CassandraTemplate.getTableName (a CqlIdentifier from the mapping context) and setApplicationContext (stores the
+     *  context, builds entity callbacks): neither touches the CqlSession; count/truncate on the same template do.</li>
+     *  <li>RabbitTemplate's constructors: {@code new RabbitTemplate(cf)} opens nothing, with the factory idle or holding a
+     *  live connection; convertAndSend on that object sends.</li></ul>
+     *
+     *  <p>ONLY AT A CONSUMER'S CALL, with the table on. The generator's own scans run with the table off, so library
+     *  bodies keep the rule's charge — and that is load-bearing: carving these members out of the CLASSIFIER instead
+     *  was built and measured, and it moved seven spring-rabbit rows off {@code Net}, two of them real
+     *  (logback/log4j2 {@code AmqpAppender.setUpExchangeDeclaration()} declares the exchange on the wire when the
+     *  connection factory already holds a connection — EXECUTED — through
+     *  {@code CachingConnectionFactory.addConnectionListener} calling {@code onCreate} at once, an internal override the
+     *  table does not follow; the rule on {@code new RabbitAdmin(cf)}'s template was the only charge covering it). */
+    private static final java.util.Set<String> YIELD_TO_TABLE = java.util.Set.of(
+            "org/springframework/data/redis/core/RedisTemplate.boundGeoOps",
+            "org/springframework/data/redis/core/RedisTemplate.boundListOps",
+            "org/springframework/data/redis/core/RedisTemplate.boundSetOps",
+            "org/springframework/data/redis/core/RedisTemplate.boundStreamOps",
+            "org/springframework/data/redis/core/RedisTemplate.boundValueOps",
+            "org/springframework/data/redis/core/RedisTemplate.boundZSetOps",
+            "org/springframework/data/cassandra/core/CassandraTemplate.getTableName",
+            "org/springframework/data/cassandra/core/CassandraTemplate.setApplicationContext",
+            "org/springframework/amqp/rabbit/core/RabbitTemplate.<init>");
+
+    /** Whether a consumer's call to {@code internalOwner.name+desc} drops its owner-wide rule's charge for the table's
+     *  answer: a {@link #YIELD_TO_TABLE} member that the table answers — a charge, or a hedge line that discloses it.
+     *  A member the table has no line for keeps the rule (the over-charge, never a silence). */
+    static boolean ruleYieldsToTable(String internalOwner, String name, String desc) {
+        if (DISABLED || PURE_OVERRIDE != null || !YIELD_TO_TABLE.contains(internalOwner + "." + name)) return false;
+        return !charges(internalOwner, name, desc).isEmpty() || hedgeKind(internalOwner, name, desc) != null;
+    }
+
     // ── SOUNDNESS R1097 — a public member overridden in ANOTHER surveyed jar ─────────────────────────────────────
     private static final Map<String, List<String>> XJAR = new HashMap<>();
 

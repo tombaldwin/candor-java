@@ -121,7 +121,19 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # A second JDK, for smoke.sh's cross-JDK arms (the report records the JDK it ran on; diff/gains/guard
+      # warn across majors). Installed FIRST so the 21 step below is the last setup-java and therefore owns
+      # JAVA_HOME and the head of PATH — candor-java's output differs between JDKs, so the build and every
+      # test must stay on 21. Only the two `path` outputs are consumed, via CANDOR_SMOKE_JDK17/21 below.
+      - name: Set up JDK 17 (cross-JDK smoke arms only)
+        id: jdk17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
       - name: Set up JDK 21
+        id: jdk21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -145,7 +157,11 @@ jobs:
 
       # Behavioural end-to-end tests: the v0.2 report, the entry schema (hash/calls/fs), the queries,
       # the baseline guard, and cross-jar inheritance + version-trust. (build, run, assert.)
+      # Under CI=true a missing JDK 17/21 FAILS the toolchain arms instead of skipping them.
       - name: Smoke tests
+        env:
+          CANDOR_SMOKE_JDK17: ${{ steps.jdk17.outputs.path }}
+          CANDOR_SMOKE_JDK21: ${{ steps.jdk21.outputs.path }}
         run: bash test/smoke.sh
 
       # Adversarial SOUNDNESS check: generate classes that thread a known effect through every JVM call

@@ -4648,6 +4648,16 @@ public class Candor {
             if (MASK_DEBUG) System.err.println("R1052PURE\t" + s.id + "\t" + owner + "." + min.name + min.desc + "\t" + effect);
             effect = null;
         }
+        // SOUNDNESS R1478 — and at a CONSUMER's call to a hand-listed member that was executed doing nothing
+        // (RedisTemplate.bound*Ops, CassandraTemplate.getTableName/setApplicationContext, RabbitTemplate's constructors):
+        // the owner-wide rule yields to the table, whose U/C line then discloses the call below. Not in library bodies the
+        // generator scans (table off there): the rule's charge on `new RabbitTemplate(cf)` inside spring-rabbit is the only
+        // cover for a real wire call the table cannot follow. FrameworkReach#ruleYieldsToTable says why each is listed.
+        if (effect != null && !ctx.projectClasses.contains(min.owner) && isOwnerBlanketRule(owner, min.desc)
+                && FrameworkReach.ruleYieldsToTable(min.owner, min.name, min.desc)) {
+            if (MASK_DEBUG) System.err.println("R1478YIELD\t" + s.id + "\t" + owner + "." + min.name + min.desc + "\t" + effect);
+            effect = null;
+        }
         // A project class that SUBCLASSES a classify-modeled external effectful type (extends a
         // Testcontainers GenericContainer, a java.io stream, …) and calls an INHERITED method:
         // classify sees the PROJECT owner (no rule) and the real body lives in the external base

@@ -5,6 +5,7 @@ import io.poly.candor.model.EffectSet;
 
 import static io.poly.candor.TestCompiler.compileApp;
 import static io.poly.candor.TestCompiler.rm;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
@@ -110,6 +111,120 @@ class NameRuleOverruledR1478Test {
         try {
             Map<String, EffectSet> r = Candor.runScan(app);
             assertTrue(eff(r, "app.C.all").contains(Effect.DB), "deny Db must fire, got " + eff(r, "app.C.all"));
+        } finally { rm(app.getParent()); }
+    }
+    // ── the fix: hand-listed members executed doing nothing yield to the table at the consumer's call ───────────────
+
+    private static final Map<String, String> REDIS = Map.of(
+            "org/springframework/data/redis/core/RedisTemplate.java", String.join("\n",
+                    "package org.springframework.data.redis.core;",
+                    "public class RedisTemplate<K, V> {",
+                    "  public BoundValueOperations<K, V> boundValueOps(K key) { return null; }",
+                    "  public BoundValueOperations<K, V> boundValueOps(K key, int unlisted) { return null; }",
+                    "}"),
+            "org/springframework/data/redis/core/BoundValueOperations.java", String.join("\n",
+                    "package org.springframework.data.redis.core;",
+                    "public interface BoundValueOperations<K, V> { V get(); }"));
+
+    /** EXECUTED (GtR1478, ~/candor-handoff/java-survey/gt-exec.txt): boundValueOps builds a proxy and calls no driver,
+     *  while get() on what it returns opens a connection. The call reads the table's U line, not Db; the later call keeps
+     *  Db through the `*Operations` rule. */
+    @Test
+    void boundValueOpsYieldsToTheTableButItsGetKeepsDb() throws Exception {
+        Path app = compileApp(REDIS, Map.of("app/B.java", String.join("\n",
+                "package app;",
+                "import org.springframework.data.redis.core.RedisTemplate;",
+                "public class B {",
+                "  public static Object bind(RedisTemplate<Object, Object> t) { return t.boundValueOps(\"k\"); }",
+                "  public static Object read(RedisTemplate<Object, Object> t) { return t.boundValueOps(\"k\").get(); }",
+                "}")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(app);
+            EffectSet bind = eff(r, "app.B.bind");
+            assertFalse(bind.contains(Effect.DB), "boundValueOps does nothing (executed); got " + bind);
+            assertTrue(bind.contains(Effect.UNKNOWN), "the table's U line must disclose the call, got " + bind);
+            assertTrue(eff(r, "app.B.read").contains(Effect.DB), "get() queries: deny Db must fire, got " + eff(r, "app.B.read"));
+        } finally { rm(app.getParent()); }
+    }
+
+    /** The guard: a listed member the table has no line for keeps the rule (an over-charge, never a silence). */
+    @Test
+    void aListedMemberTheTableDoesNotAnswerKeepsTheRule() throws Exception {
+        Path app = compileApp(REDIS, Map.of("app/G.java", String.join("\n",
+                "package app;",
+                "import org.springframework.data.redis.core.RedisTemplate;",
+                "public class G {",
+                "  public static Object bind(RedisTemplate<Object, Object> t) { return t.boundValueOps(\"k\", 1); }",
+                "}")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(app);
+            assertTrue(eff(r, "app.G.bind").contains(Effect.DB), "no table line: the rule stays, got " + eff(r, "app.G.bind"));
+        } finally { rm(app.getParent()); }
+    }
+
+    /** EXECUTED: `new RabbitTemplate(cf)` connects to nothing (idle factory, and a factory already holding a connection);
+     *  convertAndSend on the same object does. */
+    @Test
+    void newRabbitTemplateYieldsButItsSendKeepsNet() throws Exception {
+        Path app = compileApp(
+                Map.of("org/springframework/amqp/rabbit/core/RabbitTemplate.java", String.join("\n",
+                                "package org.springframework.amqp.rabbit.core;",
+                                "public class RabbitTemplate {",
+                                "  public RabbitTemplate(org.springframework.amqp.rabbit.connection.ConnectionFactory cf) {}",
+                                "  public void convertAndSend(String routingKey, Object message) {}",
+                                "}"),
+                        "org/springframework/amqp/rabbit/connection/ConnectionFactory.java", String.join("\n",
+                                "package org.springframework.amqp.rabbit.connection;",
+                                "public interface ConnectionFactory {}")),
+                Map.of("app/Q.java", String.join("\n",
+                        "package app;",
+                        "import org.springframework.amqp.rabbit.core.RabbitTemplate;",
+                        "import org.springframework.amqp.rabbit.connection.ConnectionFactory;",
+                        "public class Q {",
+                        "  public static Object make(ConnectionFactory cf) { return new RabbitTemplate(cf); }",
+                        "  public static void send(ConnectionFactory cf) { new RabbitTemplate(cf).convertAndSend(\"q\", \"x\"); }",
+                        "}")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(app);
+            EffectSet make = eff(r, "app.Q.make");
+            assertFalse(make.contains(Effect.NET), "the constructor opens nothing (executed); got " + make);
+            assertTrue(make.contains(Effect.UNKNOWN), "the table's C line must disclose the call, got " + make);
+            assertTrue(eff(r, "app.Q.send").contains(Effect.NET), "convertAndSend sends: deny Net must fire, got " + eff(r, "app.Q.send"));
+        } finally { rm(app.getParent()); }
+    }
+
+    /** EXECUTED: getTableName and setApplicationContext touch no CqlSession; count on the same template does. */
+    @Test
+    void cassandraTemplateTableNameYieldsButCountKeepsDb() throws Exception {
+        Path app = compileApp(
+                Map.of("org/springframework/data/cassandra/core/CassandraTemplate.java", String.join("\n",
+                                "package org.springframework.data.cassandra.core;",
+                                "public class CassandraTemplate {",
+                                "  public com.datastax.oss.driver.api.core.CqlIdentifier getTableName(Class<?> c) { return null; }",
+                                "  public void setApplicationContext(org.springframework.context.ApplicationContext c) {}",
+                                "  public long count(Class<?> c) { return 0L; }",
+                                "}"),
+                        "com/datastax/oss/driver/api/core/CqlIdentifier.java", String.join("\n",
+                                "package com.datastax.oss.driver.api.core;",
+                                "public class CqlIdentifier {}"),
+                        "org/springframework/context/ApplicationContext.java", String.join("\n",
+                                "package org.springframework.context;",
+                                "public interface ApplicationContext {}")),
+                Map.of("app/T.java", String.join("\n",
+                        "package app;",
+                        "import org.springframework.data.cassandra.core.CassandraTemplate;",
+                        "public class T {",
+                        "  public static Object name(CassandraTemplate t) { return t.getTableName(Object.class); }",
+                        "  public static void ctx(CassandraTemplate t, org.springframework.context.ApplicationContext c) { t.setApplicationContext(c); }",
+                        "  public static long count(CassandraTemplate t) { return t.count(Object.class); }",
+                        "}")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(app);
+            for (String fn : new String[] { "app.T.name", "app.T.ctx" }) {
+                assertFalse(eff(r, fn).contains(Effect.DB), fn + " touches no session (executed); got " + eff(r, fn));
+                assertTrue(eff(r, fn).contains(Effect.UNKNOWN), fn + " must stay disclosed, got " + eff(r, fn));
+            }
+            assertTrue(eff(r, "app.T.count").contains(Effect.DB), "count queries: deny Db must fire, got " + eff(r, "app.T.count"));
         } finally { rm(app.getParent()); }
     }
 }

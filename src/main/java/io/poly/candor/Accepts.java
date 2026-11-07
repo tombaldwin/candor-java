@@ -196,12 +196,14 @@ final class Accepts {
         List<Accept.Entry> entries;
         Map<Integer, List<Accept.Row>> direct;
         Set<String> twins;
+        Map<String, Set<String>> callers;
         Set<Integer> stale;
         try {
             g0 = gate(reports, vpath, pol);
             entries = new ArrayList<>(Accept.entries);
             direct = Accept.directSnapshot();
             twins = Accept.twinSnapshot();
+            callers = Accept.callersSnapshot();
             stale = Accept.staleLines();
         } finally {
             Accept.forceTwins = false;
@@ -342,6 +344,7 @@ final class Accepts {
         // ---- adoption candidates: the rows no entry names (computed in both modes: `unnamed`) ---------------------
         record Cand(int line, String fn, String hash, String rule, List<String> effects) {}
         List<Cand> cands = new ArrayList<>();
+        Map<String, String> advice = new HashMap<>();                    // positional fn -> what accepting its creator would do
         Map<String, TreeSet<String>> refused = new LinkedHashMap<>();   // reason key -> the fns no entry could be written for
         Set<String> seen = new HashSet<>();
         for (Row v : rows(d)) {
@@ -356,7 +359,12 @@ final class Accepts {
                 for (Accept.Entry e : entries) if (e.fn().equals(v.fn()) && e.ruleKey().equals(rule)) named = true;
                 if (named || !seen.add(rule + "\u0000" + v.fn())) continue;
                 if (twins.contains(v.fn())) { refuse(refused, "twin", v.fn()); continue; }
-                if (Accept.positional(v.fn())) { refuse(refused, "positional", v.fn()); continue; }
+                if (Accept.positional(v.fn())) {
+                    refuse(refused, "positional", v.fn());
+                    String adv = creatorAdvice(v, rule, per.getOrDefault(L, List.of()), callers);
+                    if (adv != null) advice.putIfAbsent(v.fn(), adv);
+                    continue;
+                }
                 if (v.fn().chars().anyMatch(c -> c == '#' || c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == 0x0B)) {
                     refuse(refused, "unwritable", v.fn()); continue;
                 }
@@ -464,7 +472,7 @@ final class Accepts {
                     + "`) kept UNJUDGED — this route cannot evaluate that rule, so nothing is known about the entry. Gate at scan time.");
         for (int L : ignored)
             System.err.println("candor accepts: line " + L + " is IGNORED by the gate and kept as written — repairing it is yours.");
-        printRefused(refused);
+        printRefused(refused, callers, advice);
         System.err.println("candor accepts: nothing was written. To take the proposal: write it to ANOTHER path (not onto the policy — "
                 + "a shell redirect onto it empties it first), then `diff " + policyPath + " <that path>` and commit.");
         return 0;
@@ -474,10 +482,49 @@ final class Accepts {
         m.computeIfAbsent(why, k -> new TreeSet<>(Query.BY_CODE_POINT)).add(fn);
     }
 
+    /** ADVISORY ONLY. For a lambda whose creator the nested-unit rule would climb to: either the line that WOULD cover it, or why none can be written. */
+    private static String creatorAdvice(Row v, String rule, List<Row> ruleRows, Map<String, Set<String>> callers) {
+        List<String> creators = Accept.climbCreators(v.fn(), callers);
+        if (creators.isEmpty()) return null;
+        for (String y : creators) {
+            if (Accept.positional(y)) continue;
+            for (Row u : ruleRows) {
+                if (!u.fn().equals(y) || !new HashSet<>(u.effects()).containsAll(v.effects())) continue;
+                TreeSet<String> conc = new TreeSet<>(u.effects());
+                boolean unk = conc.remove("Unknown");
+                if (unk && u.classes().isEmpty()) continue;
+                String eff = String.join(" ", canon(conc, unk ? u.classes() : null));
+                return "candor accepts: `" + v.fn() + "` gets no line of its own: it is red only because its creating function `" + y
+                        + "` is not accepted, and an entry on that function covers it. Accept the creator: `accept " + y + " " + eff
+                        + " for " + rule + " because …`.";
+            }
+        }
+        return "candor accepts: no accept line is written for `" + v.fn() + "`: it is created in `" + creators.get(0) + "`, which the enclosing entry would climb to, but that function has no violation row of its own under `"
+                + rule + "`, so no `accept` line can be written for it and nothing covers this lambda. Remedy: move its body into a NAMED method and accept that.";
+    }
+
     /** ⟨0.41.1⟩ Every violation the proposal leaves red because NO line could be written for it — with the reason and the remedy,
      *  so "after the proposal the gate exits 1 with N violation(s)" is never a number with no cause. Human channel only: the
      *  plan document is unchanged. Up to five names per reason, then a count. */
-    private static void printRefused(Map<String, TreeSet<String>> refused) {
+    private static void printRefused(Map<String, TreeSet<String>> refused, Map<String, Set<String>> callers, Map<String, String> advice) {
+        // a positional row no accept line can ever cover gets its own sentence (creating function, what works); the rest keep the generic one
+        TreeSet<String> pos = refused.get("positional");
+        if (pos != null) {
+            TreeSet<String> rest = new TreeSet<>(Query.BY_CODE_POINT);
+            TreeSet<String> notes = new TreeSet<>(Query.BY_CODE_POINT);
+            for (String f : pos) {
+                String n = Accept.uncoverableNote(f, callers);
+                if (n != null) notes.add("candor accepts: no accept line is written for " + n);
+                else if (advice.get(f) != null) notes.add(advice.get(f));
+                else rest.add(f);
+            }
+            if (rest.isEmpty()) refused.remove("positional"); else refused.put("positional", rest);
+            int k = 0;
+            for (String n : notes) {
+                if (k++ == 5) { System.err.println("candor accepts: … and " + (notes.size() - 5) + " more violation(s) no `accept` line can cover."); break; }
+                System.err.println(n);
+            }
+        }
         String[][] why = {
             {"positional", "keyed by POSITION (an anonymous class `Foo$1`, a lambda `lambda$…`), which an `accept` line cannot name — a renumbering would re-point it at a different unit",
                 "give it a NAME (extract the anonymous class to a named one, a lambda to a named method), re-scan, and run `accepts` again; or fix the violation"},

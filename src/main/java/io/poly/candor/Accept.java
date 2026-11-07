@@ -277,7 +277,9 @@ final class Accept {
     private static final Pattern LAMBDA = Pattern.compile("^(.*)\\.lambda\\$(.+)\\$\\d+$");
 
     /** Candidate FQ names of the method a javac lambda is lexically inside (§6.2 nested-unit rule). */
-    private static List<String> enclosingOf(String fn) {
+    private static List<String> enclosingOf(String fn) { return enclosingOf(fn, callersOf); }
+
+    private static List<String> enclosingOf(String fn, Map<String, Set<String>> callersOf) {
         Matcher m = LAMBDA.matcher(fn);
         if (!m.matches()) return List.of();
         String cls = m.group(1), meth = m.group(2);
@@ -296,6 +298,66 @@ final class Accept {
             if ((head != null && caller.startsWith(head)) || lam) { if (!out.contains(caller)) out.add(caller); }
         }
         return out;
+    }
+
+    /** ADVISORY ONLY. The units the nested-unit rule would climb to from a javac lambda: the enclosing-method candidates
+     *  that really edge it. Empty for anything else. */
+    static List<String> climbCreators(String fn, Map<String, Set<String>> callers) {
+        List<String> out = new ArrayList<>();
+        if (!LAMBDA.matcher(fn).matches()) return out;
+        Set<String> by = callers.getOrDefault(fn, Set.of());
+        for (String c : enclosingOf(fn, callers)) if (by.contains(c)) out.add(c);
+        return out;
+    }
+
+    /** ADVISORY ONLY (no verdict reads it). A copy of this run's inverted call graph, for the {@code accepts} verb. */
+    static Map<String, Set<String>> callersSnapshot() {
+        Map<String, Set<String>> m = new HashMap<>();
+        for (var e : callersOf.entrySet()) m.put(e.getKey(), new TreeSet<>(e.getValue()));
+        return m;
+    }
+
+    /** ADVISORY ONLY. For a red row keyed by POSITION that NO {@code accept} line can cover, the sentence saying why and what
+     *  works; null when it is not that case. Nothing here is read by {@link #settle}, so no verdict, exit code, report byte
+     *  or match moves.
+     *
+     *  <p>A javac lambda that some unit EDGES is covered by accepting that unit (the nested-unit rule), so it gets no
+     *  note. The uncoverable ones are the lambdas NOBODY edges (the creator returns, stores or collects it instead of
+     *  running it, so no function row carries its effect) and every other positional key, which the nested-unit rule does
+     *  not climb (an anonymous or local class {@code C$1.run}). Accepting a function the body CALLS covers neither: the
+     *  model is per unit. */
+    static String uncoverableNote(String fn, Map<String, Set<String>> callers) {
+        if (!positional(fn)) return null;
+        Set<String> by = callers.getOrDefault(fn, Set.of());
+        boolean lambda = LAMBDA.matcher(fn).matches();
+        String made;
+        if (lambda) {
+            // COVERABLE iff a unit the nested-unit rule would CLIMB TO edges it (the enclosing method, spelled as
+            // enclosingOf spells it). A caller that merely dispatches to it (`r.run()` on any Runnable resolves to every
+            // Runnable body in scope) is not the creator and covers nothing.
+            List<String> enc = enclosingOf(fn, callers);
+            for (String c : enc) if (by.contains(c)) return null;
+            // the method name is javac's own (`lambda$<method>$N`); the overload is not recoverable without an edge
+            made = "created in `" + enc.get(0) + "`";
+        } else {
+            Matcher cm = Pattern.compile("^(.*)\\.[^.]*$").matcher(fn);
+            String cls = cm.matches() ? cm.group(1) : fn;
+            // an anonymous or local class is instantiated only by code lexically inside its OUTER class, so a caller from
+            // anywhere else (an interface dispatch that resolves to this body) is not its creator
+            String outer = cls.replaceAll("\\$\\d+\\w*$", "");
+            TreeSet<String> out = new TreeSet<>();
+            for (String c : by)
+                if (!c.startsWith(cls + ".") && !c.startsWith(cls + "$") && (c.startsWith(outer + ".") || c.startsWith(outer + "$"))) out.add(c);
+            if (out.size() == 1) made = "created in `" + out.first() + "`";
+            else if (out.size() > 1)
+                made = "created by one of " + String.join(", ", out.stream().limit(4).map(x -> "`" + x + "`").toList())
+                        + (out.size() > 4 ? ", …" : "") + " (the call graph does not tell the creator from a caller)";
+            else made = "created by a function this run does not record";
+        }
+        return "`" + fn + "` is keyed by POSITION and no `accept` line can cover it: it is " + made
+                + " but is not run there (returned, stored in a field or collection, or an anonymous or local class), so no accepted function's row carries its effect."
+                + " Accepting a function it calls does not cover it. Remedy: move its body into a NAMED method and accept that,"
+                + " or run it where it is created.";
     }
 
     /** Decide without emitting — for the advisory verbs, which only need to know WHICH units are accepted. */
@@ -382,6 +444,14 @@ final class Accept {
     static int finish() {
         if (entries.isEmpty()) return 0;
         int stale = 0;
+        // advisory (stderr only): red rows no accept line can ever cover, with the creating function when known
+        TreeSet<String> notes = new TreeSet<>(Query.BY_CODE_POINT);
+        for (Row r : remaining) { String n = uncoverableNote(r.name, callersOf); if (n != null) notes.add(n); }
+        int shown = 0;
+        for (String n : notes) {
+            if (shown++ == 5) { System.err.println("candor-java: … and " + (notes.size() - 5) + " more red violation(s) no `accept` line can cover (positional keys)."); break; }
+            System.err.println("candor-java: " + n);
+        }
         List<Map<String, Object>> items = new ArrayList<>();
         for (Entry e : entries) {
             boolean forbid = e.effects().isEmpty();

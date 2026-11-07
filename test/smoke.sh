@@ -3861,7 +3861,63 @@ ffp="$(cd "$W/ff/proj" && "$CJ" accepts --report .candor/report.current.json --a
 want    "fieldfix: accepts takes the policy from .candor/config"                 "$ffp" 'accept'
 want    "fieldfix: the positional refusal names the class"                       "$ffp" '`Fz$1.run`'
 want    "fieldfix: …its reason"                                                  "$ffp" 'keyed by POSITION'
-want    "fieldfix: …and its remedy"                                              "$ffp" 'give it a NAME'
+want    "fieldfix: …and its remedy"                                              "$ffp" 'move its body into a NAMED method'
+
+# ⟨0.41.3⟩ a red POSITIONAL row no `accept` line can cover says WHY, names the CREATING function when the engine knows it, and
+# gives the remedies that work (a named method; or run it where it is created) — never "accept the callee", which under the
+# per-unit model covers nothing. ADVISORY TEXT ONLY (stderr): no verdict, exit code or report byte moves.
+mkdir -p "$W/lr/src/lx" "$W/lr/cls"
+cat > "$W/lr/src/lx/N.java" <<'JAVA'
+package lx;
+import java.nio.file.*;
+import java.util.*;
+public class N {
+    interface Cb { void go(); }
+    static void w() { try { Files.writeString(Path.of("/tmp/candor-lr-x"), "x"); } catch (Exception e) { throw new RuntimeException(e); } }
+    static void go(Cb c) { c.go(); }
+    static Cb kept;
+    static List<Cb> bag = new ArrayList<>();
+    public static Cb ret() { return () -> w(); }
+    public static void field() { kept = () -> w(); }
+    public static void coll() { bag.add(() -> w()); }
+    public static void pass() { go(() -> w()); }
+}
+JAVA
+cat > "$W/lr/src/lx/A.java" <<'JAVA'
+package lx;
+public class A {
+    public static Object anon() { return new N.Cb() { public void go() { N.w(); } }; }
+}
+JAVA
+javac -d "$W/lr/cls" "$W/lr/src/lx/N.java" "$W/lr/src/lx/A.java"
+printf 'deny Fs lx\n' > "$W/lr/none.pol"
+{ printf 'deny Fs lx\n'; for f in ret field coll pass w; do printf 'accept lx.N.%s Fs for deny Fs lx because t\n' "$f"; done; printf 'accept lx.A.anon Fs for deny Fs lx because t\n'; } > "$W/lr/p.pol"
+LRE="$("$CJ" "$W/lr/cls" --policy "$W/lr/p.pol" --gate-json "$W/lr/v.json" 2>&1 >/dev/null)"
+want    "lambda remedy: a RETURNED lambda names its creating function"           "$LRE" '`lx.N.lambda$ret$0` is keyed by POSITION and no `accept` line can cover it: it is created in `lx.N.ret`'
+want    "lambda remedy: a FIELD-stored lambda names its creating function"       "$LRE" '`lx.N.lambda$field$1` is keyed by POSITION and no `accept` line can cover it: it is created in `lx.N.field`'
+want    "lambda remedy: a COLLECTION-stored lambda names its creating function"  "$LRE" '`lx.N.lambda$coll$2` is keyed by POSITION and no `accept` line can cover it: it is created in `lx.N.coll`'
+want    "lambda remedy: an anonymous class names its creating function"          "$LRE" '`lx.A$1.go` is keyed by POSITION and no `accept` line can cover it: it is created in `lx.A.anon`'
+want    "lambda remedy: …and gives the remedy that works"                        "$LRE" 'Remedy: move its body into a NAMED method and accept that, or run it where it is created.'
+want    "lambda remedy: …and says accepting a callee does not cover it"          "$LRE" 'Accepting a function it calls does not cover it.'
+wantnot "lambda remedy: never suggests accepting the callee"                     "$LRE" 'accept the callee'
+wantnot "lambda remedy CONTROL: a lambda passed into a call and covered gets no note" "$LRE" 'lambda$pass$'
+"$CJ" "$W/lr/cls" --policy "$W/lr/p.pol" >/dev/null 2>&1; want "lambda remedy: the gate still exits 1" "exit $?" 'exit 1'
+"$CJ" "$W/lr/cls" --policy "$W/lr/none.pol" >/dev/null 2>"$W/lr/none.err"
+wantnot "lambda remedy: a policy with no accept line gets no new text"          "$(cat "$W/lr/none.err")" 'no `accept` line can cover it'
+"$CJ" "$W/lr/cls" --no-baseline --json "$W/lr/rep.json" >/dev/null 2>&1
+LRA="$("$CJ" accepts --report "$W/lr/rep.json" --policy "$W/lr/none.pol" --adopt --because t 2>&1 >/dev/null)"
+want    "lambda remedy: accepts names the creating function (returned)"          "$LRA" '`lx.N.lambda$ret$0` is keyed by POSITION and no `accept` line can cover it: it is created in `lx.N.ret`'
+want    "lambda remedy: accepts names the creating function (anonymous class)"   "$LRA" '`lx.A$1.go` is keyed by POSITION and no `accept` line can cover it: it is created in `lx.A.anon`'
+want    "lambda remedy: accepts gives the remedy that works"                     "$LRA" 'Remedy: move its body into a NAMED method and accept that, or run it where it is created.'
+LRJ="$("$CJ" accepts --report "$W/lr/rep.json" --policy "$W/lr/none.pol" --adopt --because t --json 2>&1 >/dev/null)"
+want    "lambda remedy: accepts --json carries the same text on the human channel" "$LRJ" 'it is created in `lx.N.field`'
+# a lambda whose creator the nested rule climbs to, red only because that creator is not accepted: say so, spelled as the line must be
+want    "lambda remedy: a covered-by-creator lambda names the creator line to accept"   "$LRA" 'Accept the creator: `accept lx.N.pass Fs for deny Fs lx because …`.'
+wantnot "lambda remedy: …and is not told to give the lambda a NAME"                     "$LRA" 'give it a NAME'
+printf 'deny Fs lx.N.lambda\n' > "$W/lr/scope.pol"
+LRS="$("$CJ" accepts --report "$W/lr/rep.json" --policy "$W/lr/scope.pol" --adopt --because t 2>&1 >/dev/null)"
+want    "lambda remedy: a creator with no row of its own cannot be accepted — says so"  "$LRS" 'but that function has no violation row of its own under `deny Fs lx.N.lambda`'
+want    "lambda remedy: …and gives the extract remedy"                                  "$LRS" '`lx.N.lambda$pass$3`: it is created in `lx.N.pass`'
 
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -48,6 +48,20 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   re-derived away. New `soundness/kappa_table/check.sh` is the weekly gate: same verdict as `derive.sh --check`, but the
   whole drift is listed (the old output was `diff | head -20` and died on SIGPIPE).
 
+### Changed
+
+- A red violation on a unit keyed by POSITION that no `accept` line can cover (a lambda its creator returns, stores in a
+  field or puts in a collection; an anonymous or local class) now says why, on stderr, from both the gate and
+  `candor accepts` (text and `--json` runs alike): it names the creating function when the engine knows it (from the
+  lambda's own name, or the call graph; it says so when it does not), and gives the remedies that work — move the body
+  into a named method and accept that, or run it where it is created — and that accepting a function it calls does not
+  cover it. Text only: no verdict, exit code, report byte, `accepts` plan document or accept-matching changes (the
+  `accepts --json` plan shape is unchanged). A lambda passed straight into a call, which the enclosing `accept`
+  covers, gets no note, and a policy with no `accept` line prints nothing new. The old `accepts` positional wording
+  ("give it a NAME") is replaced for these rows. A lambda red only because its creating function is not accepted now
+  gets the exact line to accept for that function (or, when the creator has no violation row of its own, the
+  extract-to-a-named-method remedy) instead of "give it a NAME".
+
 ## [0.41.3] — 2026-11-06
 
 - **jbang catalog points at the 0.41.3 jar.**

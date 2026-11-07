@@ -482,9 +482,6 @@ final class Accepts {
         m.computeIfAbsent(why, k -> new TreeSet<>(Query.BY_CODE_POINT)).add(fn);
     }
 
-    /** ⟨0.41.1⟩ Every violation the proposal leaves red because NO line could be written for it — with the reason and the remedy,
-     *  so "after the proposal the gate exits 1 with N violation(s)" is never a number with no cause. Human channel only: the
-     *  plan document is unchanged. Up to five names per reason, then a count. */
     /** ADVISORY ONLY. For a lambda whose creator the nested-unit rule would climb to: either the line that WOULD cover it, or why none can be written. */
     private static String creatorAdvice(Row v, String rule, List<Row> ruleRows, Map<String, Set<String>> callers) {
         List<String> creators = Accept.climbCreators(v.fn(), callers);
@@ -506,6 +503,9 @@ final class Accepts {
                 + rule + "`, so no `accept` line can be written for it and nothing covers this lambda. Remedy: move its body into a NAMED method and accept that.";
     }
 
+    /** ⟨0.41.1⟩ Every violation the proposal leaves red because NO line could be written for it — with the reason and the remedy,
+     *  so "after the proposal the gate exits 1 with N violation(s)" is never a number with no cause. Human channel only: the
+     *  plan document is unchanged. Up to five names per reason, then a count. */
     private static void printRefused(Map<String, TreeSet<String>> refused, Map<String, Set<String>> callers, Map<String, String> advice) {
         // a positional row no accept line can ever cover gets its own sentence (creating function, what works); the rest keep the generic one
         TreeSet<String> pos = refused.get("positional");

@@ -132,6 +132,23 @@ fixed in the leaf; the table inherits the fix by regeneration.
   75 pairs removed (Net 33, Llm 22, Db 20; 39 `C` lines, 14 `U` lines where the member's bodies now read only
   `Unknown`), 25 kept; every removal executed or read as performing nothing at that call (R1468 lane evidence).
 
+* **The return-type guard asks what the hidden later call can do (SOUNDNESS R1476).** A P member whose RETURN type has an
+  abstract member the hedge discloses kept its name rule whatever that member could do, so once R1471 hedged every
+  implementer carrying `Unknown`, `RestTemplate.getUriTemplateHandler()` (`getfield; areturn`) lost its P line because
+  `UriTemplateHandler.expand` is hedged, and a consumer reading the handler read `Net` again (EXECUTED: an expand opens
+  nothing). The guard now keeps the rule only where such a member can perform the rule's effect
+  (`FrameworkReachGen#canPerform`): it has no surveyed implementer, or one reaches the effect, or reaches code outside the
+  surveyed jars and the JDK. The reach is the implementer's statically-resolved closure plus the concrete effects of one
+  level of surveyed dispatch, the level step 5a reads. The consumer's later call keeps its `Unknown[dispatch:...]`.
+  Kept by it, and pinned: `KafkaTemplate.getProducerFactory()`. The factory's surveyed implementers read Clock/Log, and the
+  producer `createProducer()` builds opens its connections inside kafka-clients, which is not surveyed (EXECUTED: 9
+  connections). Not restored, for the same reason: `ReactiveMongoTemplate.createCollectionPreparer` (its preparer calls
+  the unsurveyed Mongo driver through method references). Measured: 5 P lines restored (`getUriTemplateHandler`,
+  `ResultSetIterator.getDynaClass`, `JCache.getCodec` and two Couchbase `getEntityInformation`), each executed or read as
+  doing nothing at the later call; no reach row and no A/U/C line moved. The same pass resolves a FINAL `Enum`/`Object`
+  member a surveyed class only inherits (`EncodingMode.equals`) as the JDK call it is (SOUNDNESS R1479); in step 5a
+  that changes 2,463 of 110,469 opaque bodies, none of which calls a P member, so neither table moves through it.
+
 The residual is the table's own: a P line is a claim about the body the JVM resolves in the SURVEYED version, not
 an override shipped in another jar (a PROJECT override is still reached by CHA — pinned in
 `LeafOverChargeR1052Test`).

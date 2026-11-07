@@ -344,12 +344,14 @@ public class FrameworkReachGen {
                 if (pureKeys.contains(m.owner + "." + m.name + m.desc)) dropC[n] |= ruleMask(m.owner, m.name, m.desc);
                 else if (!jdkOwner(m.owner) && !loggingFrontier(m.owner) && !runtimeOwner(m.owner)
                         && !ruleCharges(m.owner, m.name, m.desc) && resolve(nodeJar.get(n), m.owner, m.name, m.desc).isEmpty()
+                        && !inheritedFinalJdk(nodeJar.get(n), m.owner, m.name, m.desc)          // SOUNDNESS R1479
                         && (!classJars.containsKey(m.owner) || implementersUnvouched(m.owner, m.name, m.desc, eff))) {
                     opaqueC[n] = true;
                     if (classJars.containsKey(m.owner)) oImpl[n] |= implementersMask(m.owner, m.name, m.desc, eff);
                     // the member the disclosure names: an abstract member the surveyed jars declare first, then an
-                    // unsurveyed owner's, then a JDK method a surveyed class only inherits (Enum.ordinal) — the least
-                    // informative; deterministic within a rank. The rank is a sort prefix, stripped on output.
+                    // unsurveyed owner's, then a JDK method a surveyed class only inherits — the least informative (a
+                    // FINAL one, Enum.ordinal, is not a dispatch at all: R1479); deterministic within a rank. The rank is
+                    // a sort prefix, stripped on output.
                     int rank = !classJars.containsKey(m.owner) ? 1 : declaredInUniverse(nodeJar.get(n), m.owner, m.name + m.desc) ? 0 : 2;
                     String k = rank + "|" + m.owner.replace('/', '.') + "." + m.name;
                     if (oRep[n] == null || k.compareTo(oRep[n]) < 0) oRep[n] = k;
@@ -393,6 +395,7 @@ public class FrameworkReachGen {
         }
         System.err.println("framework-reach: " + reapplied + " bodies keep a P member's rule charge (opaque closure, an "
                 + "implementer of the unfollowable dispatch carries it); " + disclosed + " disclose it instead (R1468)");
+        hiddenReach(N, succ, eff);
         // 5b. SOUNDNESS R1052 — the P list for the NEXT iteration: this run's candidates, restricted to the list the
         // scans were given (-Dframework.pureIn), whose return type is inert under these closed effects. derive.sh
         // stops when it reproduces its input.
@@ -403,7 +406,9 @@ public class FrameworkReachGen {
         TreeSet<String> pureNext = new TreeSet<>();
         for (String k : pureIn) {
             String desc = k.substring(k.indexOf('('));
-            if (returnTypeInert(Type.getReturnType(desc), PURE_JAR.get(k))) pureNext.add(k);
+            int dot = k.lastIndexOf('.', k.indexOf('('));
+            int rule = ruleMask(k.substring(0, dot), k.substring(dot + 1, k.indexOf('(')), desc);
+            if (returnTypeInert(Type.getReturnType(desc), PURE_JAR.get(k), rule)) pureNext.add(k);
         }
         String pout = System.getProperty("framework.pureOut");
         if (pout != null) {
@@ -723,18 +728,27 @@ public class FrameworkReachGen {
 
     static final Map<String, Boolean> INERT = new HashMap<>();
 
-    /** Whether a value of type {@code t} cannot carry I/O to a later call that only the factory's blanket charged: a
-     *  primitive, a JDK VALUE or collection type (java.lang / java.util — not java.util.concurrent or java.util.stream,
-     *  whose futures and streams run deferred work — java.time, java.math, java.net.URI), or a SURVEYED framework type
-     *  none of whose ABSTRACT members a consumer can call is one the hedge discloses as `dispatch:` (an implementer the
-     *  table charges or could read only as Unknown, or none — {@link #implementersUnvouched}, the A-line rule itself).
-     *  Measured reason: MongoTemplate.query(X.class) is pure, and the Db is `.all()` on the ExecutableFind INTERFACE it
-     *  returns, hedged `dispatch:` — so dropping the blanket on query() turned `deny Db` 1 -> 0 behind an Unknown. A
-     *  CONCRETE member is answered at the consumer by the table from its own body, and an abstract member a NAME rule
-     *  charges at the consumer's own call (Spring AI's {@code ChatOptions.copy()} under the model-SDK blanket) keeps
-     *  that charge — neither can lose its label this way. One level deep; anything unsurveyed is not inert. Needs the closed effect masks, which is why derive.sh
-     *  iterates the P list to a fixed point (fewer P lines -> more charges -> fewer inert types, so it only shrinks). */
-    static boolean returnTypeInert(Type t, int j) {
+    /** Whether a value of type {@code t}, handed back by a proven-pure member a NAME rule charges with {@code rule}, cannot
+     *  carry that effect to a later call that only the rule's charge stood in for: a primitive, a JDK VALUE or collection
+     *  type (java.lang / java.util — not java.util.concurrent or java.util.stream, whose futures and streams run deferred
+     *  work — java.time, java.math, java.net.URI), or a SURVEYED framework type none of whose ABSTRACT members a consumer
+     *  can call is one the hedge discloses as `dispatch:` ({@link #implementersUnvouched}, the A-line rule) AND whose hidden
+     *  dispatch can perform the rule's effect ({@link #canPerform}). Measured reason for the guard: MongoTemplate.query(X.class)
+     *  is pure, and the Db is `.all()` on the ExecutableFind INTERFACE it returns, hedged `dispatch:` — so dropping the
+     *  blanket on query() turned `deny Db` 1 -> 0 behind an Unknown. A CONCRETE member is answered at the consumer by the
+     *  table from its own body, and an abstract member a NAME rule charges at the consumer's own call (Spring AI's
+     *  {@code ChatOptions.copy()} under the model-SDK blanket) keeps that charge — neither can lose its label this way.
+     *
+     *  <p>SOUNDNESS R1476 — until then ANY hedged abstract member blocked, whatever it could do; since R1471 widened the
+     *  A-line rule to every implementer carrying Unknown, that dropped the P line of {@code RestTemplate.getUriTemplateHandler()}
+     *  ({@code getfield; areturn}) because {@code UriTemplateHandler.expand} is hedged, and a consumer reading the handler was
+     *  charged {@code Net} again — EXECUTED, an expand opens nothing. The disclosure is the A line's job and it stays: the
+     *  consumer's later {@code expand} still reads {@code Unknown[dispatch:...]}. The rule's charge on the getter is kept
+     *  only where that hidden call can be the rule's effect.
+     *
+     *  <p>One level deep; anything unsurveyed is not inert. Needs the closed effect masks, which is why derive.sh iterates
+     *  the P list to a fixed point (fewer P lines -> more charges -> fewer inert types, so it only shrinks). */
+    static boolean returnTypeInert(Type t, int j, int rule) {
         if (t.getSort() == Type.ARRAY) t = t.getElementType();
         if (t.getSort() != Type.OBJECT) return true;
         String n = t.getInternalName();
@@ -746,9 +760,10 @@ public class FrameworkReachGen {
                         && !n.startsWith("java/util/function/") && !n.startsWith("java/util/logging/") && !n.startsWith("java/util/jar/")
                         && !n.startsWith("java/util/zip/") && !n.equals("java/util/Scanner") && !n.equals("java/util/Timer"))
                 || n.startsWith("java/time/") || n.startsWith("java/math/") || n.equals("java/net/URI");
-        Boolean m = INERT.get(n);
+        String ck = n + "|" + rule;
+        Boolean m = INERT.get(ck);
         if (m != null) return m;
-        INERT.put(n, false);                        // a cycle is not a proof
+        INERT.put(ck, false);                       // a cycle is not a proof
         int cj = jarOf(j, n);
         ClassNode c = cls(cj, n);
         boolean r = c != null && !loggingFrontier(n) && !runtimeOwner(n);
@@ -760,14 +775,164 @@ public class FrameworkReachGen {
                 List<Integer> tg = resolve(cj, n, name, desc);
                 // A CONCRETE member is answered at the consumer by its own body — the table charges what it reaches —
                 // so it cannot lose its label to this. An ABSTRACT one is where the factory's blanket was the only
-                // concrete charge the chain carried (the consumer otherwise gets a `dispatch:` Unknown), so it must be
-                // pure through every surveyed implementer.
-                if (tg.isEmpty() && implementersUnvouched(n, name, desc, EFF) && !ruleCharges(n, name, desc)) r = false;
+                // concrete charge the chain carried (the consumer otherwise gets a `dispatch:` Unknown), so it must not
+                // be able to perform the blanket's effect through any surveyed implementer (R1476).
+                if (tg.isEmpty() && implementersUnvouched(n, name, desc, EFF) && !ruleCharges(n, name, desc)
+                        && canPerform(n, name, desc, rule)) r = false;
                 if (!r) break;
             }
         }
-        INERT.put(n, r);
+        INERT.put(ck, r);
         return r;
+    }
+
+    // ── SOUNDNESS R1476 — WHAT A HIDDEN DISPATCH CAN PERFORM ────────────────────────────────────────────────────────
+    /** Per body: the concrete effects (and stand-ins disclosed instead of charged, {@link #LOST}) its statically-resolved
+     *  closure reaches, with {@link #OUTSIDE} set where that closure calls code outside the surveyed jars and the JDK — an
+     *  unsurveyed owner, an abstract member no surveyed class implements, a member inherited from an unsurveyed ancestor —
+     *  plus the concrete effects (not {@code OUTSIDE}) of the surveyed implementers of every abstract member it calls: the
+     *  same one level R1468's step 5a reads. Computed once per generator run, after step 5a. */
+    static int[] HIDDEN;
+    /** Above every effect bit: the closure reaches code the table cannot see (outside the surveyed jars and the JDK). */
+    static final int OUTSIDE = 1 << 30;
+
+    /** Whether a call to the abstract {@code owner.name+desc} can perform an effect in {@code rule}: it has no surveyed
+     *  implementer (the implementation ships elsewhere: a driver, a container), or one of them reaches the effect, or
+     *  reaches code outside the surveyed jars and the JDK. `Llm` is a label no body performs, so a body that reaches
+     *  `Net` can perform a model-SDK rule's `Llm`. Measured counter-case kept by this: KafkaTemplate.getProducerFactory()
+     *  — the factory's surveyed implementers read Clock/Log, and createProducer() opens the producer's connections inside
+     *  kafka-clients, which is not surveyed (EXECUTED: 9 connections). */
+    static boolean canPerform(String owner, String name, String desc, int rule) {
+        List<Integer> ib = implementerBodies(owner, name, desc);
+        if (ib.isEmpty()) return true;
+        int want = rule | OUTSIDE;
+        if ((rule & bit(Effect.LLM.specName())) != 0) want |= bit(Effect.NET.specName());
+        for (int t : ib) if ((HIDDEN[t] & want) != 0) return true;
+        return false;
+    }
+
+    /** The surveyed bodies a call to the abstract {@code owner.name+desc} can run: the walk of {@link #implementersMask}. */
+    static List<Integer> implementerBodies(String owner, String name, String desc) {
+        String key = owner + "." + name + desc;
+        List<Integer> hit = IMPL_BODIES.get(key);
+        if (hit != null) return hit;
+        implementersUnvouched(owner, name, desc, EFF == null ? new int[nodeKey.size()] : EFF);    // builds `subs`
+        ArrayDeque<String> q = new ArrayDeque<>(subs.getOrDefault(owner, List.of()));
+        Set<String> seen = new HashSet<>();
+        List<Integer> out = new ArrayList<>();
+        while (!q.isEmpty()) {
+            String c = q.poll();
+            if (!seen.add(c)) continue;
+            q.addAll(subs.getOrDefault(c, List.of()));
+            List<Integer> js = classJars.get(c);
+            if (js == null) continue;
+            for (int j : js) {
+                ClassNode cn = cls(j, c);
+                if (cn == null || (cn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_INTERFACE)) != 0) continue;
+                for (int t : resolve(j, c, name, desc)) if (!out.contains(t)) out.add(t);
+            }
+        }
+        IMPL_BODIES.put(key, out);
+        return out;
+    }
+    static final Map<String, List<Integer>> IMPL_BODIES = new HashMap<>();
+
+    static void hiddenReach(int N, int[][] succ, int[] eff) {
+        int[] own = new int[N];
+        List<List<Integer>> disp = new ArrayList<>(N);
+        for (int n = 0; n < N; n++) {
+            own[n] = eff[n] | LOST[n];
+            List<Integer> d = new ArrayList<>();
+            disp.add(d);
+            MethodNode mn = nodeMethod.get(n);
+            if (mn.instructions == null) continue;
+            int j = nodeJar.get(n);
+            for (AbstractInsnNode in : mn.instructions) {
+                String o, nm, ds;
+                if (in instanceof MethodInsnNode m) { o = m.owner; nm = m.name; ds = m.desc; }
+                else if (in instanceof InvokeDynamicInsnNode x && x.bsm != null
+                        && x.bsm.getOwner().equals("java/lang/invoke/LambdaMetafactory") && x.bsmArgs.length > 1
+                        && x.bsmArgs[1] instanceof Handle h) { o = h.getOwner(); nm = h.getName(); ds = h.getDesc(); }
+                else continue;
+                if (o.startsWith("[") || jdkOwner(o) || loggingFrontier(o) || runtimeOwner(o) || ruleCharges(o, nm, ds)) continue;
+                if (!resolve(j, o, nm, ds).isEmpty()) continue;                  // a statically-resolved edge: in succ
+                if (!classJars.containsKey(o) || inheritedFromOutside(j, o)) { own[n] |= OUTSIDE; continue; }
+                if (inheritedFinalJdk(j, o, nm, ds)) continue;                   // SOUNDNESS R1479
+                List<Integer> ib = implementerBodies(o, nm, ds);
+                if (ib.isEmpty()) { own[n] |= OUTSIDE; continue; }
+                d.addAll(ib);
+            }
+        }
+        List<List<Integer>> rev = new ArrayList<>(N);
+        for (int n = 0; n < N; n++) rev.add(new ArrayList<>());
+        for (int n = 0; n < N; n++) for (int x : succ[n]) rev.get(x).add(n);
+        closeOver(rev, own);
+        int[] h = new int[N];
+        for (int n = 0; n < N; n++) { h[n] = own[n]; for (int t : disp.get(n)) h[n] |= own[t] & ~OUTSIDE; }
+        closeOver(rev, h);
+        HIDDEN = h;
+    }
+
+    /** Callers inherit their callees' bits: least fixpoint over the reverse statically-resolved edges. */
+    static void closeOver(List<List<Integer>> rev, int[] a) {
+        int N = a.length;
+        ArrayDeque<Integer> wl = new ArrayDeque<>();
+        boolean[] in = new boolean[N];
+        for (int n = 0; n < N; n++) if (a[n] != 0) { wl.add(n); in[n] = true; }
+        while (!wl.isEmpty()) {
+            int n = wl.poll(); in[n] = false;
+            for (int p : rev.get(n)) {
+                int add = a[n] & ~a[p];
+                if (add == 0) continue;
+                a[p] |= add;
+                if (!in[p]) { wl.add(p); in[p] = true; }
+            }
+        }
+    }
+
+    /** Whether {@code owner}'s superclass chain or superinterfaces leave the surveyed jars for a class that is neither
+     *  JDK nor a language runtime: a member that resolves to no surveyed body may then be that ancestor's. */
+    static boolean inheritedFromOutside(int from, String owner) {
+        ArrayDeque<String> q = new ArrayDeque<>(); q.add(owner);
+        Set<String> seen = new HashSet<>();
+        while (!q.isEmpty()) {
+            String c = q.poll();
+            if (!seen.add(c)) continue;
+            if (jdkOwner(c) || runtimeOwner(c)) continue;
+            ClassNode cn = cls(jarOf(from, c), c);
+            if (cn == null) return true;
+            if (cn.superName != null) q.add(cn.superName);
+            q.addAll(cn.interfaces);
+        }
+        return false;
+    }
+
+    /** SOUNDNESS R1479 — a FINAL {@code java.lang.Enum} / {@code java.lang.Object} member called through a surveyed class
+     *  that only inherits it ({@code EncodingMode.equals}, {@code ordinal}): resolution leaves the surveyed jars for the
+     *  JDK body every JDK release declares final, so the call is a JDK call, not a dispatch the table cannot follow. Only
+     *  where every class between the owner and {@code java/lang/Enum} (or {@code Object}) is surveyed and none declares
+     *  the member. Measured reach in step 5a: 2,463 of 110,469 opaque bodies stop being opaque, none of which reaches a
+     *  P member, so neither table moves; in {@link #hiddenReach} it is what lets an enum comparison inside a URI builder
+     *  read as the JDK call it is. */
+    static boolean inheritedFinalJdk(int from, String owner, String name, String desc) {
+        String nd = name + desc;
+        boolean enumFinal = nd.equals("ordinal()I") || nd.equals("name()Ljava/lang/String;") || nd.equals("equals(Ljava/lang/Object;)Z")
+                || nd.equals("hashCode()I") || nd.equals("compareTo(Ljava/lang/Enum;)I") || nd.equals("getDeclaringClass()Ljava/lang/Class;");
+        boolean objectFinal = nd.equals("getClass()Ljava/lang/Class;");
+        if (!enumFinal && !objectFinal) return false;
+        String c = owner;
+        int j = jarOf(from, c);
+        Set<String> seen = new HashSet<>();
+        while (c != null && seen.add(c)) {
+            if (c.equals("java/lang/Enum")) return true;
+            if (c.equals("java/lang/Object")) return objectFinal;
+            ClassNode cn = cls(j, c);
+            if (cn == null) return false;
+            for (MethodNode mn : cn.methods) if (mn.name.equals(name) && mn.desc.equals(desc)) return false;
+            c = cn.superName;
+            j = c == null ? -1 : jarOf(j, c);
+        }
+        return false;
     }
 
     /** The effects the NAME rule(s) a P line overrides would charge at a call to {@code owner.name+desc}. */

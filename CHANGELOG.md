@@ -9,6 +9,19 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **⚠ A proven-pure getter is no longer charged its owner's rule only because the type it returns is hedged (SOUNDNESS
+  R1476).** The return-type guard on the `P` list kept a name rule's charge on a pure getter whenever any abstract member of
+  the returned type was hedged; since the R1471 entry below hedges every implementer that carries `Unknown`, it put `Net` back
+  on `RestTemplate.getUriTemplateHandler()` (spring-web's `DefaultRestClientBuilder.getUriBuilderFactory` read `[Net,
+  Unknown]` with `incomplete: Net`). The guard now keeps the charge only where the hidden later call can perform the rule's
+  effect: a surveyed implementer reaches it, or reaches code outside the surveyed jars and the JDK, or there is no surveyed
+  implementer. The later call still reports `Unknown[dispatch:...]`. 5 `P` lines return (`RestTemplate.getUriTemplateHandler`,
+  commons-beanutils `ResultSetIterator.getDynaClass`, Redisson `JCache.getCodec`, two Couchbase repository
+  `getEntityInformation`); executed, none of the later calls reaches a driver or opens a connection. Kept, and pinned by a
+  test: `KafkaTemplate.getProducerFactory()` (the producer it creates connects, inside kafka-clients). Not restored:
+  `ReactiveMongoTemplate.createCollectionPreparer`, whose preparer calls the unsurveyed Mongo driver. The same change
+  resolves a final `Enum`/`Object` method a surveyed class inherits as a JDK call rather than an unfollowable dispatch
+  (R1479); no table line moves through that part.
 - **⚠ The framework table no longer charges a rule's effect as a stand-in for a dispatch it cannot follow; it discloses the
   dispatch instead (SOUNDNESS R1468, the R1052 step-5a stand-in).** Where a framework body's closure called a proven-pure
   (`P`) member and also reached a dispatch the generator cannot follow, the generator put back the owner-wide name rule's

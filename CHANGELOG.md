@@ -9,6 +9,18 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **The framework tables stop dropping a hedge when an implementer reads wider than exactly `Unknown` (R1471).** The weekly
+  `derive.sh --check` had been red since 0.40.15: `implementersUnvouched` and the cross-jar `O` test vouched for a body only
+  when its `inferred` set was exactly `[Unknown]`, so once the dispatch closure widened a body to
+  `[Clock, Fs, Log, Rand, Unknown]` (direct `[]`) the abstract member lost its `A` line while its concrete implementers kept
+  their `U` -- a call through `ehcache`'s `Serializer.read(ByteBuffer)` or `Store.clear()` read silent. A compiler-generated
+  bridge (no report row) now carries what the body it forwards to carries, which restores mongodb's
+  `Replacement.toDocumentExpression`. Tables regenerated with `soundness/kappa_table/derive.sh`; against the published 0.41.3
+  over the 452-jar corpus 183 rows newly carry `Unknown` (0.011% of 1,669,927 analysed units), 0 rows removed, one pure
+  getter (`DefaultRestClientBuilder.getUriBuilderFactory`) newly charged `Net` by a name rule because two `P` lines were
+  re-derived away. New `soundness/kappa_table/check.sh` is the weekly gate: same verdict as `derive.sh --check`, but the
+  whole drift is listed (the old output was `diff | head -20` and died on SIGPIPE).
+
 ## [0.41.3] — 2026-11-06
 
 - **jbang catalog points at the 0.41.3 jar.**

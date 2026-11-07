@@ -200,6 +200,20 @@ public class FrameworkReachGen {
     static final TreeMap<String, String> HEDGE = new TreeMap<>();
     static final TreeSet<String> SURVEYED = new TreeSet<>();
 
+    /** SOUNDNESS R1471 -- whether a body carries Unknown anywhere the scan could say so. The engine reports no row for a
+     *  compiler-generated BRIDGE (covariant return, generic erasure), so a bridge reads as examined-and-pure even when
+     *  the real body it forwards to is Unknown: mongodb's {@code Replacement.toDocumentExpression(..)Object} resolves, in
+     *  its implementers, to the bridge, and the Document-returning body behind it reads [Db, Log, Unknown]. A bridge
+     *  therefore carries what its (bridge-only chain of) callees carry. */
+    static boolean unkAny(int t) { return unkAny(t, new HashSet<>()); }
+    static boolean unkAny(int t, Set<Integer> seen) {
+        if (UNK_ANY.contains(t)) return true;
+        MethodNode m = nodeMethod.get(t);
+        if (m == null || (m.access & Opcodes.ACC_BRIDGE) == 0 || !seen.add(t)) return false;
+        for (int x : successors(t)) if (x != t && unkAny(x, seen)) return true;
+        return false;
+    }
+
     static Integer node(int j, String owner, String nameDesc) { return nodeId.get(j + "|" + owner + "." + nameDesc); }
 
     public static void main(String[] a) throws Exception {
@@ -371,7 +385,7 @@ public class FrameworkReachGen {
                         if (tg.isEmpty()) { if (!name.equals("<init>") && implementersUnvouched(cn.name, name, desc, eff))
                             HEDGE.putIfAbsent(cn.name + "." + sig, "A"); }
                         else if (UNK_ONLY.containsAll(tg)) HEDGE.putIfAbsent(cn.name + "." + sig, "U");
-                        else if (UNK_ANY.containsAll(tg) && (FLOOR.contains(cn.name + "." + sig)
+                        else if (tg.stream().allMatch(FrameworkReachGen::unkAny) && (FLOOR.contains(cn.name + "." + sig)
                                 || tg.stream().allMatch(t -> eff[t] == 0))) FLOORED.add(cn.name + "." + sig);
                     }
                     if (tg.isEmpty()) continue;
@@ -877,7 +891,7 @@ public class FrameworkReachGen {
                 Integer id = node(kc[0], sub, nd);
                 if (id == null) continue;
                 int add = eff[id] & ~mask;
-                boolean unk = eff[id] == 0 && UNK_ONLY.contains(id);
+                boolean unk = eff[id] == 0 && unkAny(id);   // R1471: an Unknown-ONLY test missed a widened body
                 if (add == 0 && !unk) continue;
                 XJAR.computeIfAbsent(key, k -> new TreeSet<>()).add(sub);
                 wit0.add(key + "\t" + (unk ? "Unknown" : names(add)) + "\tXJAR\t" + jarNames.get(j) + "\t"
@@ -1062,7 +1076,11 @@ public class FrameworkReachGen {
                 if (cn == null || (cn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_INTERFACE)) != 0) continue;
                 for (int t : resolve(j, c, name, desc)) {
                     bodies++;
-                    if (eff[t] != 0 || UNK_ONLY.contains(t)) return true;
+                    // SOUNDNESS R1471 -- ANY Unknown vouches nothing, not only an Unknown-ONLY body: since the dispatch closure
+                    // widened (R1303/R1304, S6) a body whose own site is Unknown reads inferred [Clock,Fs,Log,Rand,Unknown] with
+                    // direct [], and the exact-[Unknown] test read it as examined-and-pure, dropping the abstract member's `A`
+                    // while its concrete implementers kept their `U` (floor / UNK_ANY, line ~374).
+                    if (eff[t] != 0 || unkAny(t)) return true;
                 }
             }
         }

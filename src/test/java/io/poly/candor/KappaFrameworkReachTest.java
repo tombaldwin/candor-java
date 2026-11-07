@@ -270,4 +270,39 @@ class KappaFrameworkReachTest {
             assertTrue(eff(r, "app.J.pure").isEmpty(), "control");
         } finally { rm(app.getParent()); }
     }
+
+    /** SOUNDNESS R1471 -- an abstract member whose surveyed implementer carries Unknown is hedged `A` even when that
+     *  implementer's inferred set is WIDER than exactly [Unknown]. The generator used to vouch for the member then
+     *  (ehcache's {@code Serializer.read(ByteBuffer)} -> {@code PlainJavaSerializer.read} -> ObjectInputStream.readObject,
+     *  inferred [Clock,Fs,Log,Rand,Unknown] with direct []), so a call through the interface went silent while the same
+     *  call on the concrete class stayed `U`. Executed fixture: a consumer calling the two members through their
+     *  interfaces reads Unknown with the dispatch reason. A table made by the old generator has no line for either key. */
+    @Test
+    void anAbstractMemberWithAnUnknownImplementerStaysHedgedWhateverElseItsInferredSetHolds() throws Exception {
+        assertEquals("A", FrameworkReach.hedgeKind("org/ehcache/spi/serialization/Serializer", "read",
+                "(Ljava/nio/ByteBuffer;)Ljava/lang/Object;"), "implementer reads ObjectInputStream.readObject");
+        assertEquals("A", FrameworkReach.hedgeKind("org/ehcache/core/spi/store/Store", "clear", "()V"));
+        assertEquals("U", FrameworkReach.hedgeKind("org/ehcache/impl/internal/store/heap/OnHeapStore", "clear", "()V"),
+                "control: the concrete implementer was always hedged");
+        Path app = compileApp(Map.of(
+                "org/ehcache/spi/serialization/Serializer.java",
+                "package org.ehcache.spi.serialization; public interface Serializer<T> { T read(java.nio.ByteBuffer b) throws Exception; }",
+                "org/ehcache/core/spi/store/Store.java",
+                "package org.ehcache.core.spi.store; public interface Store<K, V> { void clear() throws Exception; }"),
+            Map.of("app/E.java", String.join("\n",
+                "package app;",
+                "public class E {",
+                "  Object viaSerializer(org.ehcache.spi.serialization.Serializer<Object> s, java.nio.ByteBuffer b) throws Exception { return s.read(b); }",
+                "  void viaStoreClear(org.ehcache.core.spi.store.Store<String, String> st) throws Exception { st.clear(); }",
+                "  int control(java.util.List<String> l) { return l.size(); }",
+                "}")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(app);
+            assertTrue(eff(r, "app.E.viaSerializer").contains(Effect.UNKNOWN), "Serializer.read discloses");
+            assertTrue(eff(r, "app.E.viaStoreClear").contains(Effect.UNKNOWN), "Store.clear discloses");
+            assertTrue(AnalysisState.ctx().unknownWhy.get("app.E.viaSerializer").toString()
+                    .contains("dispatch:org.ehcache.spi.serialization.Serializer.read"), "with its reason");
+            assertTrue(eff(r, "app.E.control").isEmpty(), "control");
+        } finally { rm(app.getParent()); }
+    }
 }

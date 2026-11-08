@@ -5115,6 +5115,7 @@ public class Candor {
             extractLiteralSurfaces(ctx, s, min, owner, se);
         }
         boolean springTyped = declarativeIoRules(ctx, s, min);
+        Cha.templateCallbacks(ctx, s, min);                       // SOUNDNESS R1511 — additive, see the method
 
         int op = min.getOpcode();
         // A static call triggers the owner's class-load → its `<clinit>` runs.

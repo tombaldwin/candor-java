@@ -9,6 +9,18 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **⚠ A call that runs a framework body on a project object is now charged the project overrides that body calls back
+  (SOUNDNESS R1511).** `class CbPeriod extends org.joda.time.base.BasePeriod` overriding `getValue(int)` with a file read:
+  `p.hashCode()`, `p.getValues()` and `p.equals(q)` run joda's `AbstractPeriod` bodies, which call `this.getValue(i)`
+  (executed: the file is read 8 times per call), and the caller had no row — unchained, and chained wherever the callback
+  is a concrete member. `DateTimeComparator.equals(o)` runs the ARGUMENT's `getLowerLimit()` and was silent the same way.
+  The framework table gains `T` lines (with `L`/`M` number tables): per member of a surveyed class, the overridable
+  members its body calls back on its own receiver (as a graph, so a member the project overrides is joined and not walked
+  through) and on its own parameters. The consumer joins its own overrides of those, for the concrete project classes the
+  receiver or argument can be. A resolution: up to the CHA bound the override's real effect is charged; past it the call
+  discloses `Unknown[dispatch]`. Additive. `CANDOR_R1511=0` switches it off (a measurement arm). A chained NON-framework
+  dependency's template method is not covered (SOUNDNESS R1512).
+
 - **⚠ A call through a dependency type now reaches the project's own override when the project class gets to that type
   only through a dependency class (SOUNDNESS R1509).** `class BadPeriod extends org.joda.time.base.BasePeriod` is a
   `ReadablePeriod` only because joda's `BasePeriod` is, and this scan's CHA never filed it there: `p.hashCode()` on a

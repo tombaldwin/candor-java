@@ -1350,4 +1350,197 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         }
         idx.put(R1509_BUILT, List.of());
     }
+
+    // ── SOUNDNESS R1511 — A FRAMEWORK BODY A PROJECT CLASS INHERITS CALLS BACK THAT CLASS'S OWN OVERRIDE ──────────────
+
+    /** The kill switch: {@code CANDOR_R1511=0} makes {@link #templateCallbacks} join nothing (a measurement arm). */
+    static final boolean R1511 = !"0".equals(System.getenv("CANDOR_R1511"));
+    static final boolean R1511_DEBUG = System.getenv("CANDOR_R1511_DEBUG") != null;
+
+    /** SOUNDNESS R1511 — a call that runs a FRAMEWORK body on a PROJECT object is charged the project overrides that
+     *  body calls back on its own receiver.
+     *
+     *  <p><b>The silence.</b> {@code class CbPeriod extends org.joda.time.base.BasePeriod} overrides
+     *  {@code getValue(int)} with a file read; {@code p.hashCode()}, {@code p.getValues()} and {@code p.equals(q)} run
+     *  joda's {@code AbstractPeriod} bodies, which call {@code this.getValue(i)} — EXECUTED, the file is read 8 times
+     *  per call. The consumer scan has no joda bytes, so it saw only the framework table's (pure) row for the member:
+     *  the caller had NO ROW, unchained and, for a concrete callback such as {@code DateTimeComparator.equals} ->
+     *  {@code getLowerLimit()}, chained too ({@code calls} names effectful callees only, and the producer resolves
+     *  {@code this.getLowerLimit()} to its own pure body). A one-tree scan edges the override through CHA.
+     *
+     *  <p><b>The fact, and the bound.</b> The framework table's {@code T} lines name, per member of a subclassable
+     *  surveyed class, the overridable members its body runs on {@code this} (FrameworkReachGen#selfDispatch). This
+     *  joins, for each concrete PROJECT class the call can run on that INHERITS the member's framework body (no
+     *  project body of its own), the project body that class runs for each member named — looked up under the class's
+     *  nearest framework superclass, which is the body it inherits. The members form a GRAPH ({@code via>member}): one
+     *  the class overrides is joined and not walked through, because its override, not the framework body that would
+     *  call back further, is what runs (measured: a flat list over-joined 148 of 2,558 corpus edges, e.g. jackson's
+     *  {@code TreeTraversingParser} overrides {@code currentName}, through which {@code nextFieldName} reaches
+     *  {@code getCurrentName}). Receiver = {@code this} in the framework body is
+     *  the whole bound: a framework call on ANOTHER object is not joined (the R1509 smear shape). JDK and language-
+     *  runtime owners are not asked (R1509's exclusion, R1510's residual), and the table has no lines for them. Up to
+     *  {@link Rules#CHA_FANOUT_LIMIT} bodies are edged; past it the call is disclosed {@code Unknown[dispatch]}. It
+     *  only ADDS: an edge or an Unknown, never a removal.
+     *
+     *  <p><b>Which receivers.</b> A virtual call: the concrete project subtypes of the declared owner, in the scan's
+     *  CHA or reaching it only through a framework class ({@link #crossBoundaryTargets}' index), narrowed to the
+     *  provable {@code new} type when there is one. A {@code super.m()} or {@code super(…)} call: the caller's own
+     *  class and its project subclasses, whatever they override of {@code m} itself.
+     *
+     *  <p><b>And the arguments.</b> {@code DateTimeComparator.equals(Object o)} calls {@code getLowerLimit()} not on
+     *  {@code this} but on {@code (DateTimeComparator) o} (EXECUTED: one read, the argument's override). The table
+     *  records such a dispatch on the called body's own parameter, through casts and locals, as {@code p<i>:owner.member};
+     *  {@link #templateArgBodies} joins the overrides of the classes the argument can be. Only the called body's own
+     *  parameters, and never a JDK or language-runtime owner (an {@code Object} parameter's {@code equals} is
+     *  ArgContract's, SOUNDNESS R1166). */
+    static void templateCallbacks(AnalysisContext c, MethodScan s, MethodInsnNode min) {
+        if (!R1511 || FrameworkReach.DISABLED) return;
+        int op = min.getOpcode();
+        if (op != Opcodes.INVOKEVIRTUAL && op != Opcodes.INVOKEINTERFACE && op != Opcodes.INVOKESPECIAL) return;
+        if (min.owner.isEmpty() || min.owner.charAt(0) == '[' || min.name.equals("<clinit>")) return;
+        if (FrameworkReach.jdkOwned(min.owner) || languageRuntimeOwned(min.owner)) return;
+        String name = min.name, desc = min.desc;
+        boolean init = name.equals("<init>");
+        ProvValue recv = receiverProv(provFrameAt(s, min), min);
+        String exact = recv == null ? null : recv.newType;
+        Set<String> bodies = new LinkedHashSet<>();
+        List<String> trace = R1511_DEBUG ? new ArrayList<>() : null;
+        if (op == Opcodes.INVOKESPECIAL) {
+            // super.m() / super(…): the body min.owner resolves to runs on THIS. Not a `new X(…)`, whose receiver is X.
+            if (s.cls == null || exact != null || (init && !s.mn.name.equals("<init>"))) return;
+            String f = null;
+            for (String t = min.owner; t != null; ) {
+                ClassNode tn = c.byName.get(t);
+                if (tn == null) { f = t; break; }
+                if (declaresConcrete(tn, name, desc) || (init && !t.equals(min.owner))) return;   // a project body runs
+                if (init) return;                                                                // a project constructor
+                t = tn.superName;
+            }
+            if (f == null) return;
+            for (String p : c.subtypeIndex.getOrDefault(s.cls.name, List.of())) templateBodies(c, p, f, name, desc, bodies, trace);
+            templateArgBodies(c, s, min, f, bodies, trace);
+        } else {
+            if (init) return;
+            Set<String> ps = new LinkedHashSet<>(), keys = new LinkedHashSet<>();
+            if (exact != null) { if (c.byName.containsKey(exact)) ps.add(exact); }
+            else {
+                ps.addAll(c.subtypeIndex.getOrDefault(min.owner, List.of()));
+                ps.addAll(crossBoundarySubtypes(c, min.owner));
+            }
+            for (String p : ps) {
+                if (projectBodyOf(c, p, name, desc) != null) continue;      // it runs its own body: the scan's CHA has it
+                String f = firstFrameworkSuper(c, p);
+                if (f != null) { templateBodies(c, p, f, name, desc, bodies, trace); keys.add(f); }
+            }
+            // the parameter entries of the body the call runs: under the declared owner when that is a framework class
+            // (the receiver may be a framework object), else under its nearest framework superclass, and under each
+            // project receiver's own (above)
+            String o = c.byName.containsKey(min.owner) ? (projectBodyOf(c, min.owner, name, desc) == null
+                    ? firstFrameworkSuper(c, min.owner) : null) : min.owner;
+            if (exact != null) { if (!c.byName.containsKey(exact)) keys.add(exact); }
+            else if (o != null) keys.add(o);
+            for (String k : keys) templateArgBodies(c, s, min, k, bodies, trace);
+        }
+        bodies.remove(s.id);
+        if (bodies.isEmpty()) return;
+        if (R1511_DEBUG) for (String t : trace)
+            System.err.println("R1511E\t" + s.cls.name + "." + s.mn.name + s.mn.desc + "\t" + op + "\t" + min.owner + "." + name + desc
+                    + "\t" + t + "\t" + (bodies.size() <= Rules.CHA_FANOUT_LIMIT ? "EDGE" : "BROAD"));
+        if (bodies.size() <= Rules.CHA_FANOUT_LIMIT) c.edges.computeIfAbsent(s.id, k -> new LinkedHashSet<>()).addAll(bodies);
+        else {
+            s.dir.add(io.poly.candor.model.Effect.UNKNOWN);
+            c.unknownWhy.computeIfAbsent(s.id, k -> new TreeSet<>()).add(io.poly.candor.model.UnknownReason.of(
+                    io.poly.candor.model.UnknownReason.Kind.DISPATCH, min.owner.replace('/', '.') + "." + name));
+        }
+    }
+
+    /** For a concrete project class {@code p} whose inherited body for {@code name+desc} is framework class {@code f}'s:
+     *  the project bodies {@code p} runs for each member the table says that body calls back on {@code this}. */
+    private static void templateBodies(AnalysisContext c, String p, String f, String name, String desc, Set<String> out,
+            List<String> trace) {
+        ClassNode pn = c.byName.get(p);
+        if (pn == null || (pn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT)) != 0) return;
+        if (FrameworkReach.jdkOwned(f) || languageRuntimeOwned(f)) return;
+        // `via>member` entries form a graph from the called member's own body (via ""): a member p overrides is joined and
+        // NOT walked through (p's override runs, not the framework body whose callbacks follow it); one p inherits is
+        // walked, because its framework body runs on p and calls back in turn.
+        Map<String, List<String>> byVia = new HashMap<>();
+        for (String e : FrameworkReach.templateMembers(f, name, desc)) {
+            int gt = e.indexOf('>');
+            if (gt < 0 || e.indexOf(':') >= 0 && e.indexOf(':') < gt) continue;      // a parameter entry: templateArgBodies
+            byVia.computeIfAbsent(e.substring(0, gt), k -> new ArrayList<>()).add(e.substring(gt + 1));
+        }
+        ArrayDeque<String> q = new ArrayDeque<>(List.of(""));
+        Set<String> walked = new HashSet<>(q);
+        while (!q.isEmpty()) {
+            for (String m : byVia.getOrDefault(q.poll(), List.of())) {
+                int paren = m.indexOf('(');
+                if (paren <= 0) continue;
+                String b = projectBodyOf(c, p, m.substring(0, paren), m.substring(paren));
+                if (b == null) { if (walked.add(m)) q.add(m); continue; }
+                out.add(b);
+                if (trace != null) trace.add(p + "\t" + f + "\t" + m + "\t" + b);
+            }
+        }
+    }
+
+    /** SOUNDNESS R1511 — the table's PARAMETER entries ({@code p<i>:<owner>.<member>}) for the body framework class
+     *  {@code f} runs for this call: that body dispatches {@code member} on its i-th argument, after a cast to
+     *  {@code owner} ({@code DateTimeComparator.equals(Object o)} runs {@code ((DateTimeComparator) o).getLowerLimit()}).
+     *  Joined: the project bodies of {@code member} in the concrete project classes the argument can be — its provable
+     *  {@code new} type, else the project subtypes of {@code owner} (narrowed to those of the argument's declared type
+     *  when that is a project class). The receiver's own class plays no part: the argument's override runs. */
+    private static void templateArgBodies(AnalysisContext c, MethodScan s, MethodInsnNode min, String f, Set<String> out,
+            List<String> trace) {
+        if (FrameworkReach.jdkOwned(f) || languageRuntimeOwned(f)) return;
+        Type[] args = Type.getArgumentTypes(min.desc);
+        org.objectweb.asm.tree.analysis.Frame<ProvValue> fr = provFrameAt(s, min);
+        for (String e : FrameworkReach.templateMembers(f, min.name, min.desc)) {
+            int colon = e.indexOf(':'), paren = e.indexOf('(');
+            if (colon < 2 || e.charAt(0) != 'p' || paren < colon || e.indexOf('>') >= 0 && e.indexOf('>') < colon) continue;
+            int i;
+            try { i = Integer.parseInt(e.substring(1, colon)); } catch (NumberFormatException x) { continue; }
+            if (i >= args.length) continue;
+            int dot = e.lastIndexOf('.', paren);
+            String x = e.substring(colon + 1, dot), m = e.substring(dot + 1, paren), md = e.substring(paren);
+            if (FrameworkReach.jdkOwned(x) || languageRuntimeOwned(x)) continue;
+            ProvValue a = null;
+            if (fr != null) { int si = fr.getStackSize() - args.length + i; if (si >= 0 && si < fr.getStackSize()) a = fr.getStack(si); }
+            String exact = a == null ? null : a.newType, decl = a == null ? null : a.declType;
+            Set<String> ps = new LinkedHashSet<>();
+            if (exact != null) { if (c.byName.containsKey(exact)) ps.add(exact); }
+            else {
+                ps.addAll(c.subtypeIndex.getOrDefault(x, List.of()));
+                ps.addAll(crossBoundarySubtypes(c, x));
+                if (decl != null && c.byName.containsKey(decl)) ps.retainAll(c.subtypeIndex.getOrDefault(decl, List.of()));
+            }
+            for (String p : ps) {
+                ClassNode pn = c.byName.get(p);
+                if (pn == null || (pn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT)) != 0) continue;
+                String b = projectBodyOf(c, p, m, md);
+                if (b == null) continue;
+                out.add(b);
+                if (trace != null) trace.add(p + "\t" + f + "\t" + e + "\t" + b);
+            }
+        }
+    }
+
+    /** The first non-project class up {@code p}'s superclass chain (the one whose bodies {@code p} inherits), or null
+     *  when that is {@code Object} or there is none. */
+    private static String firstFrameworkSuper(AnalysisContext c, String p) {
+        for (String t = p; t != null; ) {
+            ClassNode tn = c.byName.get(t);
+            if (tn == null) return t.equals("java/lang/Object") ? null : t;
+            t = tn.superName;
+        }
+        return null;
+    }
+
+    /** The concrete project classes that reach {@code owner} only through a type outside the scan ({@link
+     *  #buildCrossBoundaryIndex}); empty for a project owner. A hierarchy fact, so not gated on {@code CANDOR_R1509}. */
+    static List<String> crossBoundarySubtypes(AnalysisContext c, String owner) {
+        if (c.byName.containsKey(owner)) return List.of();
+        if (!c.crossBoundaryIndex.containsKey(R1509_BUILT)) buildCrossBoundaryIndex(c);
+        return c.crossBoundaryIndex.getOrDefault(owner, List.of());
+    }
 }

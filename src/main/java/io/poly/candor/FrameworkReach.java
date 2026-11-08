@@ -231,6 +231,54 @@ final class FrameworkReach {
         return JDK_PKGS.contains(internalName.substring(0, sl).replace('/', '.'));
     }
 
+    // ── SOUNDNESS R1511 — A FRAMEWORK BODY THAT CALLS BACK ITS OWN RECEIVER'S OVERRIDES ─────────────────────────────
+    private static final Map<String, String> TEMPLATE = new HashMap<>();
+    private static final Map<String, String> TEMPLATE_RAW = new HashMap<>(), TEMPLATE_MEMBERS = new HashMap<>();
+    private static final Map<String, List<String>> TEMPLATE_LISTS = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** An L line decoded (members by M number -> {@code via>member} / {@code p<i>:owner.member}), memoised. */
+    private static List<String> templateList(String id) {
+        List<String> l = TEMPLATE_LISTS.get(id);
+        if (l != null) return l;
+        String raw = TEMPLATE_RAW.get(id);
+        if (raw == null) throw new IllegalStateException("candor: " + HEDGE_RESOURCE + " names list " + id + " it lacks");
+        List<String> out = new ArrayList<>();
+        if (!raw.isEmpty())
+            for (String e : raw.split(",")) {
+                int gt = e.indexOf('>');
+                if (gt < 0) { int c = e.indexOf(':'); out.add(e.substring(0, c + 1) + member(e.substring(c + 1))); }
+                else out.add((gt > 0 ? member(e.substring(0, gt)) : "") + ">" + member(e.substring(gt + 1)));
+            }
+        l = List.copyOf(out);
+        TEMPLATE_LISTS.put(id, l);
+        return l;
+    }
+
+    private static String member(String id) {
+        String m = TEMPLATE_MEMBERS.get(id);
+        if (m == null) throw new IllegalStateException("candor: " + HEDGE_RESOURCE + " names member " + id + " it lacks");
+        return m;
+    }
+
+    /** The overridable members ({@code name+desc}) that the surveyed body a consumer subclass of {@code internalOwner}
+     *  inherits for {@code name+desc} runs on its own receiver, closed over the bodies those calls run (the table's
+     *  {@code T} lines, FrameworkReachGen#selfDispatch); empty when the table has none or is off. A line is written
+     *  only where it differs from the inherited one, so the lookup walks up the H lines' FIRST entries (the
+     *  superclass) to the first class that has one — the same walk FrameworkReachGen#templateLines suppressed by. */
+    static List<String> templateMembers(String internalOwner, String name, String desc) {
+        if (DISABLED) return List.of();
+        if (hedge == null) loadHedge();
+        String sig = "." + name + desc;
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (String c = internalOwner; c != null && seen.add(c); ) {
+            String id = TEMPLATE.get(c + sig);
+            if (id != null) return templateList(id);
+            List<String> up = SUPERS.get(c);
+            c = up == null || up.isEmpty() ? null : up.get(0);
+        }
+        return List.of();
+    }
+
     static int hedgeSize() { return hedge == null ? loadHedge().size() : hedge.size(); }
 
     private static synchronized Map<String, String> loadHedge() {
@@ -258,6 +306,12 @@ final class FrameworkReach {
                         int t2 = v.indexOf('\t');
                         if (t2 <= 0) throw new IllegalStateException("candor: " + HEDGE_RESOURCE + " bad line: " + line);
                         SUPERS.put(v.substring(0, t2), List.of(v.substring(t2 + 1).split(",")));
+                    }
+                    case "T", "L", "M" -> { // SOUNDNESS R1511: T key <TAB> list number; L number <TAB> entries; M number <TAB> member
+                        int t2 = v.indexOf('\t');
+                        if (t2 <= 0) throw new IllegalStateException("candor: " + HEDGE_RESOURCE + " bad line: " + line);
+                        (kind.equals("T") ? TEMPLATE : kind.equals("L") ? TEMPLATE_RAW : TEMPLATE_MEMBERS)
+                                .put(v.substring(0, t2), v.substring(t2 + 1));
                     }
                     case "O" -> {      // SOUNDNESS R1097: key <TAB> overriding classes, comma-separated
                         int t2 = v.indexOf('\t');

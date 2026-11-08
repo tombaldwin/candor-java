@@ -226,6 +226,18 @@ public class FrameworkReachGen {
      *  supertypes gets their union -- a wider walk only adds candidates), JDK packages excluded (the engine reads those off
      *  its own class path). */
     static List<String> hierarchyLines() {
+        List<String> out = new ArrayList<>(hierarchy().size());
+        for (Map.Entry<String, LinkedHashSet<String>> e : hierarchy().entrySet())
+            out.add("H\t" + e.getKey() + "\t" + String.join(",", e.getValue()));
+        return out;
+    }
+
+    static TreeMap<String, LinkedHashSet<String>> HIER;
+
+    /** The H lines' content: class -> direct supertypes, exactly as written (so the consumer's walk over them and
+     *  {@link #templateLines}' suppression read the same first entry). */
+    static TreeMap<String, LinkedHashSet<String>> hierarchy() {
+        if (HIER != null) return HIER;
         Set<String> jdk = new HashSet<>(jdkPackages());
         TreeMap<String, LinkedHashSet<String>> sup = new TreeMap<>();
         for (Map<String, ClassNode> m : jarClasses)
@@ -240,10 +252,238 @@ public class FrameworkReachGen {
                 if (s.isEmpty()) continue;
                 sup.computeIfAbsent(cn.name, k -> new LinkedHashSet<>()).addAll(s);
             }
-        List<String> out = new ArrayList<>(sup.size());
-        for (Map.Entry<String, LinkedHashSet<String>> e : sup.entrySet())
-            out.add("H\t" + e.getKey() + "\t" + String.join(",", e.getValue()));
+        HIER = sup;
+        return sup;
+    }
+
+    // ── SOUNDNESS R1511 — A TEMPLATE METHOD CALLS BACK AN OVERRIDE ON ITS OWN RECEIVER ─────────────────────────────────
+    /** key (a subclassable surveyed class . member) -> the overridable members its body runs on {@code this}. */
+    static final TreeMap<String, TreeSet<String>> TEMPLATE = new TreeMap<>();
+    static final Map<Integer, List<Object[]>> THIS_CALLS = new HashMap<>();
+
+    /** SOUNDNESS R1511 -- the members a consumer subclass of {@code cls} can override that the body(ies) {@code roots}
+     *  dispatch on their OWN receiver, closed over the bodies those calls run on that receiver. A consumer
+     *  {@code CbPeriod extends BasePeriod} overriding {@code getValue(int)} with a file read is called back by the
+     *  inherited {@code AbstractPeriod.hashCode} (EXECUTED: 8 reads), and the consumer scan, which has no framework
+     *  bytes, cannot see that call: it reads {@code p.hashCode()} as the table's pure row. These lines give it the
+     *  one fact it lacks; Cha#templateCallbacks joins the consumer's own overrides of the members named.
+     *
+     *  <p>Only calls whose receiver is {@code this} (an {@code ALOAD 0} in an instance body that never stores local
+     *  0): a call on another object runs that object's override, which a CHA over every consumer override would
+     *  smear onto every caller (the R1509 smear). A virtual call is resolved from {@code cls} -- the receiver is at
+     *  least a {@code cls} -- and followed; a {@code super}/private/constructor call ({@code INVOKESPECIAL}) runs
+     *  exactly its owner's body on the same receiver and is followed without being recorded. A member is recorded
+     *  unless its nearest surveyed declaration from {@code cls} is final, static, private or package-private (none
+     *  of which a consumer in another package can override); a declaration outside the survey (the JDK) is
+     *  recorded, and the consumer joins only a body its own class declares with that exact name and descriptor. */
+    /** SOUNDNESS R1511 -- the T lines, compressed two ways, both exact. (1) A key whose list equals what the consumer's
+     *  walk reads one class up is not written: FrameworkReach#templateMembers looks the member up on the class, then on
+     *  the FIRST supertype of its H line (the superclass, unless that is Object), and so on, stopping at the first line
+     *  it finds -- so an inherited member costs no line, and a key whose list DIFFERS from the inherited one (an
+     *  override, an empty list included) always gets its own. (2) Each distinct list is written once, as an L line,
+     *  and a T line names its number; (3) each member string is written once, as a numbered M line. Uncompressed the
+     *  lines were 28 MB on the surveyed jars. */
+    static List<String> templateLines() {
+        Map<String, Set<String>> walk = new HashMap<>();
+        TreeMap<String, Set<String>> emit = new TreeMap<>();
+        for (String k : TEMPLATE.keySet()) {
+            int p = k.indexOf('('), dot = k.lastIndexOf('.', p);
+            String c = k.substring(0, dot), sig = k.substring(dot + 1);
+            Set<String> mine = TEMPLATE.get(k);
+            if (!mine.equals(inheritedTemplate(c, sig, walk, emit))) emit.put(k, mine);
+        }
+        // (3) every member string is written once, as a numbered M line, and a list names members by number
+        TreeMap<String, Integer> mids = new TreeMap<>();
+        for (Set<String> l : emit.values())
+            for (String e : l) {
+                int gt = e.indexOf('>');
+                if (gt < 0) mids.putIfAbsent(e.substring(e.indexOf(':') + 1), 0);
+                else { if (gt > 0) mids.putIfAbsent(e.substring(0, gt), 0); mids.putIfAbsent(e.substring(gt + 1), 0); }
+            }
+        int mn = 0;
+        for (Map.Entry<String, Integer> e : mids.entrySet()) e.setValue(mn++);
+        Map<Set<String>, String> enc = new HashMap<>();
+        TreeMap<String, Integer> ids = new TreeMap<>();
+        for (Set<String> l : emit.values()) {
+            String x = enc.get(l);
+            if (x == null) {
+                List<String> es = new ArrayList<>();
+                for (String e : l) {
+                    int gt = e.indexOf('>');
+                    if (gt < 0) { int c = e.indexOf(':'); es.add(e.substring(0, c + 1) + mids.get(e.substring(c + 1))); }
+                    else es.add((gt > 0 ? String.valueOf(mids.get(e.substring(0, gt))) : "") + ">" + mids.get(e.substring(gt + 1)));
+                }
+                x = String.join(",", es);
+                enc.put(l, x);
+            }
+            ids.putIfAbsent(x, 0);
+        }
+        int n = 0;
+        for (Map.Entry<String, Integer> e : ids.entrySet()) e.setValue(n++);
+        List<String> out = new ArrayList<>();
+        for (Map.Entry<String, Integer> e : mids.entrySet()) out.add("M\t" + e.getValue() + "\t" + e.getKey());
+        for (Map.Entry<String, Integer> e : ids.entrySet()) out.add("L\t" + e.getValue() + "\t" + e.getKey());
+        for (Map.Entry<String, Set<String>> e : emit.entrySet()) out.add("T\t" + e.getKey() + "\t" + ids.get(enc.get(e.getValue())));
         return out;
+    }
+
+    /** What the consumer's walk reads for {@code sig} starting one H step above {@code c}, given the lines decided so far
+     *  (decided supertypes-first by the recursion, so the answer never depends on key order). */
+    static Set<String> inheritedTemplate(String c, String sig, Map<String, Set<String>> walk, TreeMap<String, Set<String>> emit) {
+        LinkedHashSet<String> h = hierarchy().get(c);
+        if (h == null || h.isEmpty()) return Set.of();
+        return readTemplate(h.iterator().next(), sig, walk, emit, new HashSet<>());
+    }
+
+    static Set<String> readTemplate(String c, String sig, Map<String, Set<String>> walk, TreeMap<String, Set<String>> emit, Set<String> seen) {
+        String k = c + "." + sig;
+        Set<String> memo = walk.get(k);
+        if (memo != null) return memo;
+        if (!seen.add(c)) return Set.of();
+        Set<String> r;
+        Set<String> mine = TEMPLATE.get(k);
+        Set<String> up = Set.of();
+        LinkedHashSet<String> h = hierarchy().get(c);
+        if (h != null && !h.isEmpty()) up = readTemplate(h.iterator().next(), sig, walk, emit, seen);
+        if (mine != null && !mine.equals(up)) { emit.put(k, mine); r = mine; }
+        else r = up;
+        walk.put(k, r);
+        return r;
+    }
+
+    static Set<String> selfDispatch(int j, String cls, List<Integer> roots) {
+        TreeSet<String> out = new TreeSet<>();
+        // (body, via): `via` is the overridable member whose body this is ("" for the called member's own), so the
+        // consumer can stop at a member its class overrides -- that override, not this body, then runs
+        ArrayDeque<Object[]> q = new ArrayDeque<>();
+        for (int r : roots) q.add(new Object[] { r, "" });
+        Set<String> seen = new HashSet<>();
+        Set<Integer> root = new HashSet<>(roots);
+        while (!q.isEmpty()) {
+            Object[] it = q.poll();
+            int n = (Integer) it[0];
+            String via = (String) it[1];
+            if (!seen.add(n + "|" + via)) continue;
+            for (Object[] rc : receiverCalls(n)) {
+                MethodInsnNode m = (MethodInsnNode) rc[0];
+                int slot = (Integer) rc[1];
+                if (slot != 0) {
+                    // SOUNDNESS R1511 -- a dispatch on one of the ROOT body's own parameters (through a cast and a local):
+                    // `DateTimeComparator.equals(Object o)` runs `((DateTimeComparator) o).getLowerLimit()`, which is the
+                    // ARGUMENT's override. Recorded with the parameter's index and the dispatched owner, so the consumer
+                    // can join the overrides of the argument's possible classes. Only the root's parameters: a this-call
+                    // body's parameters are not the consumer's arguments.
+                    if (!root.contains(n) || !via.isEmpty() || m.getOpcode() == Opcodes.INVOKESPECIAL || m.owner.startsWith("[")) continue;
+                    int pi = paramIndex(nodeMethod.get(n), slot);
+                    String own = m.owner;
+                    int sl = own.lastIndexOf('/');
+                    if (pi < 0 || sl <= 0 || jdkOwner(own) || runtimeOwner(own)) continue;
+                    if (overridable(nodeJar.get(n), own, m.name, m.desc)) out.add("p" + pi + ":" + own + "." + m.name + m.desc);
+                    continue;
+                }
+                if (m.getOpcode() == Opcodes.INVOKESPECIAL) {
+                    for (int t : resolve(nodeJar.get(n), m.owner, m.name, m.desc)) q.add(new Object[] { t, via });
+                    continue;
+                }
+                String next = via;
+                if (overridable(j, cls, m.name, m.desc)) { out.add(via + ">" + m.name + m.desc); next = m.name + m.desc; }
+                for (int t : resolve(j, cls, m.name, m.desc)) q.add(new Object[] { t, next });
+            }
+        }
+        return out;
+    }
+
+    /** The parameter index (0-based, receiver excluded) whose value starts in local {@code slot}, or -1. */
+    static int paramIndex(MethodNode mn, int slot) {
+        int at = (mn.access & Opcodes.ACC_STATIC) != 0 ? 0 : 1, i = 0;
+        for (Type t : Type.getArgumentTypes(mn.desc)) {
+            if (at == slot) return t.getSort() == Type.OBJECT ? i : -1;
+            at += t.getSize(); i++;
+        }
+        return -1;
+    }
+
+    /** Whether a consumer subclass of {@code cls} (in another package) can override {@code name+desc}: decided by the
+     *  nearest surveyed declaration -- superclass chain first, then superinterfaces; true when none is surveyed. */
+    static boolean overridable(int j, String cls, String name, String desc) {
+        ArrayDeque<String> q = new ArrayDeque<>();
+        Set<String> vis = new HashSet<>();
+        for (String c = cls; c != null; ) {
+            int cj = jarOf(j, c);
+            ClassNode cn = cls(cj, c);
+            if (cn == null) break;
+            for (MethodNode mn : cn.methods)
+                if (mn.name.equals(name) && mn.desc.equals(desc)) return overridable(mn);
+            q.addAll(cn.interfaces);
+            c = cn.superName;
+        }
+        while (!q.isEmpty()) {
+            String i = q.poll();
+            if (!vis.add(i)) continue;
+            ClassNode in = cls(jarOf(j, i), i);
+            if (in == null) continue;
+            for (MethodNode mn : in.methods)
+                if (mn.name.equals(name) && mn.desc.equals(desc)) return overridable(mn);
+            q.addAll(in.interfaces);
+        }
+        return true;
+    }
+
+    static boolean overridable(MethodNode mn) {
+        return (mn.access & (Opcodes.ACC_FINAL | Opcodes.ACC_STATIC | Opcodes.ACC_PRIVATE)) == 0
+                && (mn.access & (Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED)) != 0;
+    }
+
+    /** The calls in body {@code n} whose receiver is provably the value a local SLOT held on entry -- slot 0 of an
+     *  instance body is {@code this}, the others its parameters -- through casts and stores to locals: each
+     *  {@code [MethodInsnNode, slot]}. Empty for a body the analyzer cannot read. */
+    static List<Object[]> receiverCalls(int n) {
+        List<Object[]> memo = THIS_CALLS.get(n);
+        if (memo != null) return memo;
+        List<Object[]> out = new ArrayList<>();
+        MethodNode mn = nodeMethod.get(n);
+        if ((mn.access & Opcodes.ACC_STATIC) == 0 && mn.instructions != null && mn.instructions.size() > 0) {
+            try {
+                org.objectweb.asm.tree.analysis.Frame<org.objectweb.asm.tree.analysis.SourceValue>[] fr =
+                        new org.objectweb.asm.tree.analysis.Analyzer<>(new org.objectweb.asm.tree.analysis.SourceInterpreter())
+                                .analyze(nodeOwner.get(n), mn);
+                for (int i = 0; i < mn.instructions.size(); i++) {
+                    if (!(mn.instructions.get(i) instanceof MethodInsnNode m) || fr[i] == null) continue;
+                    int op = m.getOpcode();
+                    if (op != Opcodes.INVOKEVIRTUAL && op != Opcodes.INVOKEINTERFACE && op != Opcodes.INVOKESPECIAL) continue;
+                    if (m.owner.startsWith("[") || m.name.equals("<clinit>")) continue;
+                    int ri = fr[i].getStackSize() - Type.getArgumentTypes(m.desc).length - 1;
+                    if (ri < 0) continue;
+                    int slot = entrySlot(mn, fr, fr[i].getStack(ri), 0);
+                    if (slot >= 0) out.add(new Object[] { m, slot });
+                }
+            } catch (Exception | LinkageError e) { out.clear(); }
+        }
+        THIS_CALLS.put(n, out);
+        return out;
+    }
+
+    /** The local slot whose ENTRY value {@code v} provably is (every source agrees), or -1. Follows ALOAD of a local
+     *  never stored on that path (its entry value), ASTORE into a local, and CHECKCAST. */
+    static int entrySlot(MethodNode mn, org.objectweb.asm.tree.analysis.Frame<org.objectweb.asm.tree.analysis.SourceValue>[] fr,
+            org.objectweb.asm.tree.analysis.SourceValue v, int depth) {
+        if (depth > 8 || v.insns.isEmpty()) return -1;
+        int slot = -2;
+        for (AbstractInsnNode s : v.insns) {
+            int idx = mn.instructions.indexOf(s), r;
+            if (fr[idx] == null) return -1;
+            if (s instanceof org.objectweb.asm.tree.VarInsnNode x && x.getOpcode() == Opcodes.ALOAD) {
+                org.objectweb.asm.tree.analysis.SourceValue l = fr[idx].getLocal(x.var);
+                r = l.insns.isEmpty() ? x.var : entrySlot(mn, fr, l, depth + 1);
+            } else if (s instanceof org.objectweb.asm.tree.VarInsnNode x && x.getOpcode() == Opcodes.ASTORE) {
+                r = entrySlot(mn, fr, fr[idx].getStack(fr[idx].getStackSize() - 1), depth + 1);
+            } else if (s.getOpcode() == Opcodes.CHECKCAST) {
+                r = entrySlot(mn, fr, fr[idx].getStack(fr[idx].getStackSize() - 1), depth + 1);
+            } else return -1;
+            if (r < 0 || (slot != -2 && slot != r)) return -1;
+            slot = r;
+        }
+        return slot;
     }
 
     static Integer node(int j, String owner, String nameDesc) { return nodeId.get(j + "|" + owner + "." + nameDesc); }
@@ -475,6 +715,9 @@ public class FrameworkReachGen {
                     MethodNode decl = nodeMethod.get(tg.get(0));
                     boolean callable = (decl.access & (Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED)) != 0;
                     if (!callable || name.equals("<clinit>")) continue;
+                    // SOUNDNESS R1511 — the overridable members this body runs on its own receiver (T lines)
+                    if (framework && (cn.access & (Opcodes.ACC_FINAL | Opcodes.ACC_INTERFACE)) == 0 && (decl.access & Opcodes.ACC_STATIC) == 0)
+                        TEMPLATE.computeIfAbsent(cn.name + "." + sig, k -> new TreeSet<>()).addAll(selfDispatch(j, cn.name, tg));
                     LinkedHashSet<Integer> rs = new LinkedHashSet<>(tg);
                     if ((decl.access & Opcodes.ACC_STATIC) != 0 || name.equals("<init>")) rs.addAll(clinits(j, cn.name));
                     int declared = 0, declaredLost = 0;
@@ -577,6 +820,7 @@ public class FrameworkReachGen {
                 hl.add("O\t" + x.getKey() + "\t" + String.join(",", x.getValue()));
             for (String pk : PURE) hl.add("P\t" + pk);
             hl.addAll(hierarchyLines());                                                 // SOUNDNESS R1509
+            hl.addAll(templateLines());                                                  // SOUNDNESS R1511
             Collections.sort(hl);
             MessageDigest hm = MessageDigest.getInstance("SHA-256");
             for (String r : hl) hm.update((r + "\n").getBytes(StandardCharsets.UTF_8));
@@ -591,6 +835,12 @@ public class FrameworkReachGen {
             hb.append("#     the overriding classes follow (R1097). See FrameworkReach#crossJarOverriders.\n");
             hb.append("# H = a surveyed class's DIRECT supertypes (superclass first, then interfaces; Object omitted), so a consumer\n");
             hb.append("#     scan can tell that its own class reaches a framework type THROUGH a framework class (R1509).\n");
+            hb.append("# T = a member of a subclassable surveyed class whose body (and the bodies it runs on the same receiver) calls\n");
+            hb.append("#     back an overridable member on `this`; the number of the L line listing those members follows (R1511):\n");
+            hb.append("#     `via>member` (reached through the body of `via`, an overridable member; empty for the called member's own),\n");
+            hb.append("#     or `p<i>:owner.member` (dispatched on the called body's i-th parameter).\n");
+            hb.append("#     Written only where it differs from what the walk up the H lines' first entries reads. See Cha#templateCallbacks.\n");
+            hb.append("# L = a numbered list of T entries, members named by M number; M = a numbered member (R1511).\n");
             hb.append("# C = a member whose closure reaches a dispatch the table cannot follow, where a NAME rule's charge used to\n");
             hb.append("#     stand in for it and no surveyed implementer carries that effect; the unfollowed member follows (R1468).\n");
             hb.append("# entries ").append(hl.size()).append('\n');

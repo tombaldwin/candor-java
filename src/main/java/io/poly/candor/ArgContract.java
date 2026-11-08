@@ -637,6 +637,9 @@ final class ArgContract {
             int paren = key.indexOf('('), dot = key.lastIndexOf('.', paren);
             String name = key.substring(dot + 1, paren), desc = key.substring(paren);
             List<String> cands = Cha.chaTargets(owner, name, desc);
+            // SOUNDNESS R1509 — and the project classes that reach `owner` only through a type outside the scan
+            List<String> xb = Cha.crossBoundaryTargets(owner, name, desc);
+            if (!xb.isEmpty()) { cands = new ArrayList<>(cands); cands.addAll(xb); }
             // R1306, generalised by call-target round 2 to every member the site table re-enters
             List<String> held = Candor.R1306 ? Cha.heldReentryAny(owner, name, desc) : List.of();
             if (!held.isEmpty()) { cands = new ArrayList<>(cands); cands.addAll(held); }   // SOUNDNESS R1306

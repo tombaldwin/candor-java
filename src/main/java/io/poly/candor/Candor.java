@@ -7601,6 +7601,26 @@ public class Candor {
                     }
                 }
             }
+            // SOUNDNESS R1509 — …AND THE PROJECT CLASSES THAT REACH THE OWNER ONLY THROUGH A TYPE OUTSIDE THE SCAN
+            // (`BadPeriod extends joda BasePeriod`, a `ReadablePeriod` only through it), which `cha` cannot see: joined
+            // here for every member but the Object protocol, which ExactTypes decides from the receiver's producers and
+            // gets the same set there. ADDITIVE, like the lambda arm above: `broad`, `targets` and every Unknown arm read
+            // `cha` alone, so no edge is lost and no disclosure is withdrawn; past the bound the set is disclosed, not
+            // dropped. See Cha#crossBoundaryTargets.
+            if (!ExactTypes.covers(min.name, min.desc) && !ctx.byName.containsKey(chaOwner)) {
+                List<String> xb = new ArrayList<>(Cha.crossBoundaryTargets(chaOwner, min.name, min.desc));
+                xb.removeAll(targets);
+                if (!xb.isEmpty()) {
+                    if (xb.size() <= CHA_FANOUT_LIMIT)
+                        ctx.edges.get(id).addAll(hedgeIncompatible(ctx, s, min, owner, chaOwner, xb, effect, springTyped, false));
+                    else {
+                        dir.add(Effect.UNKNOWN);
+                        ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                                .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
+                    }
+                    if (Cha.R1509_DEBUG) System.err.println("R1509SITE\t" + id + "\t" + chaOwner + "." + min.name + min.desc + "\t" + xb.size());
+                }
+            }
             // PROVABLE-INCOMPLETENESS: a sealed type whose permit-closure names an off-classpath
             // subtype is KNOWN-incomplete — the narrow path resolves only the visible permits and
             // would read silent-pure on the unseen one. Disclose Unknown (the visible impls' edges

@@ -189,6 +189,11 @@ final class AnalysisContext {
      *  on a given declared type — so caching collapses the analyze pass's dominant super-linear cost
      *  (CHA fan-out × super-walk, re-done per call site). Immutable values → safe to share. */
     Map<String, List<String>> chaTargetsCache = new HashMap<>();
+    /** SOUNDNESS R1509 — Cha#crossBoundaryTargets: a non-project type -> the concrete project classes that reach it only
+     *  through a type outside the scan (built once, on first use, after the chained sidecars load), and its per-member
+     *  answers. Memos of a pure function of the fixed hierarchy, like {@code chaTargetsCache}. */
+    Map<String, List<String>> crossBoundaryIndex = new HashMap<>();
+    Map<String, List<String>> crossBoundaryCache = new HashMap<>();
     /** SOUNDNESS R131 — memo for {@link Candor#externalSupertypeEffects}: the effects an EXTERNAL owner
      *  inherits from a CLASSIFIER-MODELLED supertype, keyed {@code owner \t name+desc}. A pure function of
      *  the classifier's rules and the (fixed) external hierarchy, exactly like {@code chaTargetsCache},
@@ -510,6 +515,7 @@ final class AnalysisContext {
         classpathRoots = master.classpathRoots;
         unanalyzed = master.unanalyzed;                     peekedClasses = master.peekedClasses;
         transSupersCache = master.transSupersCache;         chaTargetsCache = master.chaTargetsCache;
+        crossBoundaryIndex = master.crossBoundaryIndex;     crossBoundaryCache = master.crossBoundaryCache;   // R1509
         annoMetaCache = master.annoMetaCache;               sealedClosedMemo = master.sealedClosedMemo;
         sealedUnseenMemo = master.sealedUnseenMemo;         externalSupersCache = master.externalSupersCache;
         resolutionOrderCache = master.resolutionOrderCache; depTransWhyMemo = master.depTransWhyMemo;
@@ -621,7 +627,7 @@ final class AnalysisContext {
      *  of the (fixed) hierarchy is the whole reason they are shared. Everything else non-final is an
      *  input and must hold still — see {@link #assertNoInputGrowth}. */
     private static final Set<String> MEMOS = Set.of(
-            "transSupersCache", "chaTargetsCache", "annoMetaCache", "sealedClosedMemo",
+            "transSupersCache", "chaTargetsCache", "crossBoundaryIndex", "crossBoundaryCache", "annoMetaCache", "sealedClosedMemo",
             "sealedUnseenMemo", "externalSupersCache", "resolutionOrderCache", "depTransWhyMemo",
             "depTransDispatchMemo",
             "extSuperEffectMemo", "depUpWalkMemo", "depFrontierMemo",

@@ -1189,4 +1189,165 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         }
         return false;
     }
+
+    // ── SOUNDNESS R1509 — A PROJECT CLASS THAT REACHES THE DISPATCHED TYPE ONLY THROUGH A DEPENDENCY CLASS ─────────────
+
+    /** The kill switch: {@code CANDOR_R1509=0} makes {@link #crossBoundaryTargets} answer nothing, which is the engine as
+     *  it was before (a measurement arm, not an option). */
+    static final boolean R1509 = !"0".equals(System.getenv("CANDOR_R1509"));
+    static final boolean R1509_DEBUG = System.getenv("CANDOR_R1509_DEBUG") != null;
+    private static final String R1509_BUILT = "\u0000built";
+
+    /** A NON-project type's direct supertypes for {@link #crossBoundaryTargets}' walk: a chained dependency's hierarchy
+     *  sidecar first, then the framework table's surveyed hierarchy ({@link FrameworkReach#surveyedSupers}), then the
+     *  class path (the JDK) — the three places this scan can learn what a type it did not load extends. */
+    static List<String> boundarySupers(String t) {
+        List<String> dep = ctx().depSupers.get(t);
+        if (dep != null) return dep;
+        List<String> fw = FrameworkReach.surveyedSupers(t);
+        if (fw != null) return fw;
+        return externalSupers(t);
+    }
+
+    /** SOUNDNESS R1509 — the PROJECT bodies a dispatch of {@code name+desc} on {@code owner} can run in a project class
+     *  that is a subtype of {@code owner} only THROUGH a type outside the scan, and that {@link #chaTargets} therefore
+     *  never sees.
+     *
+     *  <p><b>The defect.</b> {@link #buildSubtypeIndex} files a project class under the supertypes {@link
+     *  Candor#transSupers} can see, which for a non-project type is the class path only. So in
+     *  {@code class BadPeriod extends org.joda.time.base.BasePeriod}, where {@code BasePeriod implements ReadablePeriod}
+     *  in joda-time, {@code BadPeriod} is filed under {@code BasePeriod} and never under {@code ReadablePeriod}:
+     *  {@code static int viaIface(ReadablePeriod p) { return p.hashCode(); }} found no candidate, and over a
+     *  {@code hashCode} that reads a file (EXECUTED: 600, the size of /etc/hosts) the caller had NO ROW, chained and
+     *  unchained, where a one-tree scan reads {@code Fs}. It was covered until 2026-11-07 only because the framework
+     *  table happened to hedge {@code ReadablePeriod.hashCode} ({@code A}); once every SURVEYED implementer read pure
+     *  the hedge went, on the generator's premise that the consumer's CHA sees its own implementers. The same hole
+     *  without any hedge to hide it, in published 0.41.3: {@code p.getValue(0)} on a {@code ReadablePeriod} unchained,
+     *  {@code p.getValue(0)} on an {@code AbstractPeriod} both ways, and any chained non-framework dependency
+     *  ({@code dep.Base implements dep.Iface}: {@code i.hashCode()} absent, {@code i.work()} {@code []}).
+     *
+     *  <p><b>Why a separate set and not a wider {@link #buildSubtypeIndex}.</b> {@link #depDirectSupers}' doc measured
+     *  that widening: every Unknown branch armed by an EMPTY candidate set goes quiet once a partial set appears, and the
+     *  partial set is not the true one where the dependency's own implementers are outside the scan (httpclient's
+     *  {@code closeExpiredConnections}, four functions, Unknown to pure). This set is consumed only where candidates are
+     *  JOINED — the in-scan CHA's edges, {@link CallTargets#resolve}'s consumer half, {@link ExactTypes}' TOP owner, the
+     *  Object floor — never where emptiness arms a disclosure, so it can only add an edge or an {@code Unknown}.
+     *
+     *  <p><b>Which bodies.</b> Only a body a PROJECT class declares — the class's own or one inherited down its project
+     *  superclass chain, else a project interface's default — because a body the dependency declares is the
+     *  dependency's to answer (its chained report, the framework table), exactly as for an in-scan dispatch. Only
+     *  non-abstract classes: an abstract one has no instance, and its concrete project subclasses are walked themselves.
+     *  The hierarchy above the scan comes from {@link #boundarySupers}; a type none of the three sources names ends the
+     *  walk there, which is the answer this engine gave before. */
+    static List<String> crossBoundaryTargets(String owner, String name, String desc) {
+        if (!R1509 || owner == null || owner.equals("java/lang/Object") || name.startsWith("<")) return List.of();
+        AnalysisContext c = ctx();
+        if (c.byName.containsKey(owner)) return List.of();
+        // NOT for a JDK owner. Its dispatch keeps the engine's stdlib posture (a project class reaching `Map` or
+        // `Iterator` through a framework collection is not edged at every `map.get`): measured without this line, the
+        // 452-jar corpus joined spring-web's seven framework-derived Map types into every `Map.get/put/remove` and a jetty
+        // handler went from [Fs] to [Clock, Db, Fs, Log, Net, Rand, Unknown]. The residual is named in SOUNDNESS R1510.
+        if (FrameworkReach.jdkOwned(owner)) return List.of();
+        Map<String, List<String>> idx = c.crossBoundaryIndex;
+        if (!idx.containsKey(R1509_BUILT)) buildCrossBoundaryIndex(c);
+        List<String> subs = idx.get(owner);
+        if (subs == null || subs.isEmpty()) return List.of();
+        // …NOR FOR A LANGUAGE RUNTIME'S OWN LIBRARY, which plays the JDK's role for its language: a Scala scan never
+        // carries scala-library any more than a Java scan carries the JDK, and its collection and function types are the
+        // vocabulary every value travels in. Measured without this line on the 452-jar corpus: 522 of the 750 rows that
+        // gained a concrete effect were scala-compiler, scala-reflect and jse, 368 of them the SAME union
+        // `Clock,Env,Fs,Log,Net` — EditDistance.levenshtein's `scala.collection.Iterator.next`, over a Range's own
+        // iterator, edged the compiler's five iterators that extend scala's AbstractIterator, whose `next` bodies
+        // dispatch `Iterator.next` again, so one component's union reached every caller. Each edge was hierarchy-true
+        // (the class does reach Iterator through AbstractIterator) but the receiver was library-made, and the bound
+        // (CHA_FANOUT_LIMIT) was counted over the project's handful where scala-library's own implementors run to
+        // hundreds: a one-tree scan reads that site as broad, never as five edges. Residual: SOUNDNESS R1510.
+        if (languageRuntimeOwned(owner)) return List.of();
+        String key = owner + '\t' + name + desc;
+        List<String> memo = c.crossBoundaryCache.get(key);
+        if (memo != null) return memo;
+        Set<String> out = new LinkedHashSet<>();
+        for (String p : subs) {
+            String b = projectBodyOf(c, p, name, desc);
+            if (b != null) out.add(b);
+        }
+        List<String> r = List.copyOf(out);
+        c.crossBoundaryCache.put(key, r);
+        if (R1509_DEBUG && !r.isEmpty()) System.err.println("R1509X\t" + owner + "." + name + desc + "\t" + r);
+        return r;
+    }
+
+    /** The language runtimes whose own library {@link #crossBoundaryTargets} treats as it treats the JDK: Scala's
+     *  scala-library, Kotlin's stdlib ({@code kotlinx/} is an ordinary library and is NOT here) and Groovy's runtime.
+     *  {@code CANDOR_R1509_LANG=0} lifts it (a measurement arm, not an option). */
+    static final boolean R1509_LANG = !"0".equals(System.getenv("CANDOR_R1509_LANG"));
+    static final List<String> LANGUAGE_RUNTIME = List.of("scala/", "kotlin/", "groovy/", "org/codehaus/groovy/");
+
+    static boolean languageRuntimeOwned(String internalName) {
+        if (!R1509_LANG) return false;
+        for (String p : LANGUAGE_RUNTIME)
+            if (internalName.startsWith(p)) {
+                if (R1509_DEBUG) System.err.println("R1509LANG\t" + internalName);
+                return true;
+            }
+        return false;
+    }
+
+    /** The project body {@code p} runs for {@code name+desc}: its own declaration or one down its PROJECT superclass
+     *  chain, else a default in a project interface it reaches through project types; null when that body is the
+     *  dependency's. Static and private methods are not overrides. */
+    private static String projectBodyOf(AnalysisContext c, String p, String name, String desc) {
+        for (String t = p; t != null; ) {
+            ClassNode cn = c.byName.get(t);
+            if (cn == null) break;
+            for (MethodNode mn : cn.methods)
+                if (mn.name.equals(name) && mn.desc.equals(desc)
+                        && (mn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_STATIC | Opcodes.ACC_PRIVATE)) == 0)
+                    return methodId(cn.name.replace('/', '.'), name, desc);
+            t = cn.superName;
+        }
+        ArrayDeque<String> q = new ArrayDeque<>();
+        Set<String> seen = new HashSet<>();
+        for (String t = p; t != null && c.byName.containsKey(t); t = c.byName.get(t).superName)
+            q.addAll(c.byName.get(t).interfaces);
+        while (!q.isEmpty()) {
+            String i = q.poll();
+            ClassNode in = c.byName.get(i);
+            if (in == null || !seen.add(i)) continue;
+            for (MethodNode mn : in.methods)
+                if (mn.name.equals(name) && mn.desc.equals(desc)
+                        && (mn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_STATIC | Opcodes.ACC_PRIVATE)) == 0)
+                    return methodId(in.name.replace('/', '.'), name, desc);
+            q.addAll(in.interfaces);
+        }
+        return null;
+    }
+
+    /** Built once, on first use — after {@code loadCrossDeps}, so a chained sidecar is in {@code depSupers}: for every
+     *  concrete project class, each type its full walk reaches ({@link #boundarySupers} past the scan) that
+     *  {@link Candor#transSupers} does not, i.e. that {@link #chaTargets} cannot see it under. */
+    private static void buildCrossBoundaryIndex(AnalysisContext c) {
+        Map<String, List<String>> idx = c.crossBoundaryIndex;
+        for (ClassNode cn : c.ALL) {
+            if ((cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT)) != 0) continue;
+            Set<String> known = transSupers(cn.name);
+            Set<String> seen = new HashSet<>();
+            ArrayDeque<String> q = new ArrayDeque<>();
+            if (cn.superName != null) q.add(cn.superName);
+            q.addAll(cn.interfaces);
+            while (!q.isEmpty()) {
+                String t = q.poll();
+                if (t.equals("java/lang/Object") || !seen.add(t)) continue;
+                ClassNode tn = c.byName.get(t);
+                if (tn != null) {
+                    if (tn.superName != null) q.add(tn.superName);
+                    q.addAll(tn.interfaces);
+                } else {
+                    q.addAll(boundarySupers(t));
+                }
+                if (!known.contains(t)) idx.computeIfAbsent(t, k -> new ArrayList<>()).add(cn.name);
+            }
+        }
+        idx.put(R1509_BUILT, List.of());
+    }
 }

@@ -214,6 +214,38 @@ public class FrameworkReachGen {
         return false;
     }
 
+    /** SOUNDNESS R1509 -- THE SURVEYED HIERARCHY, for a consumer that extends a framework class. {@link #implementersUnvouched}
+     *  drops an abstract member's `A` line when every SURVEYED implementer is pure, on the premise that "project-side
+     *  implementers are the consumer scan's own business -- its CHA sees them". It does not: a consumer
+     *  {@code BadPeriod extends org.joda.time.base.BasePeriod} implements {@code ReadablePeriod} only through
+     *  {@code BasePeriod}, whose bytes are not on the consumer scan's class path, so the consumer's CHA over
+     *  {@code ReadablePeriod} is empty and {@code p.hashCode()} read silent over a body that reads a file (EXECUTED). These
+     *  lines give the consumer the one fact it lacks: each surveyed class's direct supertypes, so it can walk from its own
+     *  class, through the framework, to the dispatched type (Cha#crossBoundaryTargets). Every class in a covered package
+     *  that has a supertype other than Object, from every surveyed jar (a class two versions declare with different
+     *  supertypes gets their union -- a wider walk only adds candidates), JDK packages excluded (the engine reads those off
+     *  its own class path). */
+    static List<String> hierarchyLines() {
+        Set<String> jdk = new HashSet<>(jdkPackages());
+        TreeMap<String, LinkedHashSet<String>> sup = new TreeMap<>();
+        for (Map<String, ClassNode> m : jarClasses)
+            for (ClassNode cn : m.values()) {
+                int sl = cn.name.lastIndexOf('/');
+                if (sl <= 0) continue;
+                String pkg = cn.name.substring(0, sl).replace('/', '.');
+                if (!Candor.kappaCovers(pkg) || jdk.contains(pkg) || (cn.access & Opcodes.ACC_SYNTHETIC) != 0) continue;
+                List<String> s = new ArrayList<>();
+                if (cn.superName != null && !cn.superName.equals("java/lang/Object")) s.add(cn.superName);
+                s.addAll(cn.interfaces);
+                if (s.isEmpty()) continue;
+                sup.computeIfAbsent(cn.name, k -> new LinkedHashSet<>()).addAll(s);
+            }
+        List<String> out = new ArrayList<>(sup.size());
+        for (Map.Entry<String, LinkedHashSet<String>> e : sup.entrySet())
+            out.add("H\t" + e.getKey() + "\t" + String.join(",", e.getValue()));
+        return out;
+    }
+
     static Integer node(int j, String owner, String nameDesc) { return nodeId.get(j + "|" + owner + "." + nameDesc); }
 
     public static void main(String[] a) throws Exception {
@@ -544,6 +576,7 @@ public class FrameworkReachGen {
             for (Map.Entry<String, TreeSet<String>> x : XJAR.entrySet())                  // SOUNDNESS R1097
                 hl.add("O\t" + x.getKey() + "\t" + String.join(",", x.getValue()));
             for (String pk : PURE) hl.add("P\t" + pk);
+            hl.addAll(hierarchyLines());                                                 // SOUNDNESS R1509
             Collections.sort(hl);
             MessageDigest hm = MessageDigest.getInstance("SHA-256");
             for (String r : hl) hm.update((r + "\n").getBytes(StandardCharsets.UTF_8));
@@ -556,6 +589,8 @@ public class FrameworkReachGen {
             hb.append("# P = a member a NAME rule charges whose surveyed body is a proven-pure field accessor (R1052).\n");
             hb.append("# O = a public member overridden in ANOTHER surveyed jar by a body that can do more than the row says;\n");
             hb.append("#     the overriding classes follow (R1097). See FrameworkReach#crossJarOverriders.\n");
+            hb.append("# H = a surveyed class's DIRECT supertypes (superclass first, then interfaces; Object omitted), so a consumer\n");
+            hb.append("#     scan can tell that its own class reaches a framework type THROUGH a framework class (R1509).\n");
             hb.append("# C = a member whose closure reaches a dispatch the table cannot follow, where a NAME rule's charge used to\n");
             hb.append("#     stand in for it and no surveyed implementer carries that effect; the unfollowed member follows (R1468).\n");
             hb.append("# entries ").append(hl.size()).append('\n');

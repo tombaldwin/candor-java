@@ -159,6 +159,16 @@ final class ExactTypes {
             // discloses only where one carries an effect the caller lacks
             if (Candor.R1306 && (kind.equals("D") || kind.equals("S")) && !Cha.heldReentry(top, name, desc).isEmpty())
                 floor(caller, top, name, desc, kind.equals("D") ? "S4" : "S5");
+            // SOUNDNESS R1509 — the project classes that reach `top` only through a type outside the scan (Cha#
+            // crossBoundaryTargets). Decided beside `cha`, never folded into its bound (a widened count would trade the
+            // edges `cha` has always had for a floor): in bound edged for an explicit dispatch, otherwise the floor, whose
+            // candidates include them (ArgContract#objectFloor).
+            List<String> xb = new ArrayList<>(Cha.crossBoundaryTargets(top, name, desc));
+            xb.removeAll(cha);
+            if (!xb.isEmpty()) {
+                if (!sink && xb.size() <= Rules.CHA_FANOUT_LIMIT) edges.addAll(xb);
+                else if (!kind.equals("Q")) floor(caller, top, name, desc, sink ? "S5" : "S4");
+            }
             if (!sink) {
                 // an explicit dispatch: in bound, the edges it has always had; past it, the S4 floor (not on this body's
                 // own parameter, whose callers are resolved by the argument they pass — ArgContract)

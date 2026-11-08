@@ -208,6 +208,29 @@ final class FrameworkReach {
         return false;
     }
 
+    // ── SOUNDNESS R1509 — THE SURVEYED HIERARCHY ─────────────────────────────────────────────────────────────────────
+    private static final Map<String, List<String>> SUPERS = new HashMap<>();
+
+    /** A surveyed framework class's DIRECT supertypes (superclass first, then interfaces; {@code Object} omitted), from
+     *  the table's {@code H} lines, or null when the table has none for it (not surveyed, a JDK class, or only
+     *  {@code Object} above it). The consumer's class path does not carry the framework's bytes, so without this a
+     *  consumer class {@code P extends fw.Base} never reaches {@code fw.Iface}, which {@code fw.Base} implements:
+     *  Cha#crossBoundaryTargets walks it. Null while the table is off, like every other read here. */
+    static List<String> surveyedSupers(String internalName) {
+        if (DISABLED) return null;
+        if (hedge == null) loadHedge();
+        return SUPERS.get(internalName);
+    }
+
+    /** SOUNDNESS R1509 — whether {@code internalName} is in a JDK package (the table's {@code J} lines, or {@code java/}). */
+    static boolean jdkOwned(String internalName) {
+        if (internalName.startsWith("java/")) return true;
+        int sl = internalName.lastIndexOf('/');
+        if (sl <= 0 || DISABLED) return false;
+        if (hedge == null) loadHedge();
+        return JDK_PKGS.contains(internalName.substring(0, sl).replace('/', '.'));
+    }
+
     static int hedgeSize() { return hedge == null ? loadHedge().size() : hedge.size(); }
 
     private static synchronized Map<String, String> loadHedge() {
@@ -231,6 +254,11 @@ final class FrameworkReach {
                         CLOSURE.put(v.substring(0, t2), v.substring(t2 + 1));
                     }
                     case "P" -> PURE.add(v);
+                    case "H" -> {      // SOUNDNESS R1509: a surveyed class <TAB> its direct supertypes, comma-separated
+                        int t2 = v.indexOf('\t');
+                        if (t2 <= 0) throw new IllegalStateException("candor: " + HEDGE_RESOURCE + " bad line: " + line);
+                        SUPERS.put(v.substring(0, t2), List.of(v.substring(t2 + 1).split(",")));
+                    }
                     case "O" -> {      // SOUNDNESS R1097: key <TAB> overriding classes, comma-separated
                         int t2 = v.indexOf('\t');
                         if (t2 <= 0) throw new IllegalStateException("candor: " + HEDGE_RESOURCE + " bad line: " + line);

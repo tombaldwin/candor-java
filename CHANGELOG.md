@@ -9,6 +9,18 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **⚠ A call through a dependency type now reaches the project's own override when the project class gets to that type
+  only through a dependency class (SOUNDNESS R1509).** `class BadPeriod extends org.joda.time.base.BasePeriod` is a
+  `ReadablePeriod` only because joda's `BasePeriod` is, and this scan's CHA never filed it there: `p.hashCode()` on a
+  `ReadablePeriod`, over a `hashCode` that reads a file, had no row (chained and unchained) once the framework table's
+  `A ReadablePeriod.hashCode` hedge was withdrawn on 2026-11-07, and `p.getValue(0)` on a `ReadablePeriod` or
+  `AbstractPeriod`, and any chained non-framework dependency's interface member, were already silent in 0.41.3. The walk
+  past the scan reads a chained hierarchy sidecar, else the framework table's new `H` lines (each surveyed class's direct
+  supertypes, 29,159 lines; no other table line moved), else the class path, and joins the project bodies it reaches.
+  Additive: no edge or disclosure is withdrawn. `CANDOR_R1509=0` switches it off (a measurement arm). A dispatch on a
+  JDK-owned type or a language runtime's own library type (`scala/`, `kotlin/`, `groovy/`, `org/codehaus/groovy/`) is
+  not joined, and stays the residual named in SOUNDNESS R1510.
+
 - **⚠ Nine Spring members charged by an owner-wide rule they never perform now read as the table discloses them
   (SOUNDNESS R1478).** `RedisTemplate.bound{Geo,List,Set,Stream,Value,ZSet}Ops` read `Db`,
   `CassandraTemplate.getTableName`/`setApplicationContext` read `Db`, and `new RabbitTemplate(...)` read `Net`, at every

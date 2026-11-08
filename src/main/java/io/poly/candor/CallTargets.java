@@ -195,6 +195,28 @@ final class CallTargets {
                 ExactTypes.record(id, site.mn(), site.insn(), site.stackIdx(), declType, name, desc, site.kind());
             resolved = true;
         }
+        // SOUNDNESS R1509 — the consumer's classes that reach declType only THROUGH a dependency class (`BadPeriod extends
+        // BasePeriod`, a `ReadablePeriod` only by the dependency's own hierarchy): `local` cannot see them, and the
+        // dependency half skips project subtypes as "the consumer half". Joined beside `local`, never counted into its
+        // bound (that would trade `local`'s edges for a floor): edged in bound, past it the floor for the Object protocol
+        // (whose candidates include them) and a dispatch Unknown otherwise. An exact dependency receiver runs none.
+        List<String> xb = recv != null || sp == Spelling.SINK ? List.of() : new ArrayList<>(Cha.crossBoundaryTargets(declType, name, desc));
+        if (!xb.isEmpty()) {
+            xb.removeAll(local);
+            boolean protocol = Candor.isObjectProtocolExempt(name, desc);
+            if (xb.isEmpty()) { /* already joined as `local` */ }
+            else if (protocol && site != null && site.recordExact())
+                ExactTypes.record(id, site.mn(), site.insn(), site.stackIdx(), declType, name, desc, site.kind());
+            else if (xb.size() <= Rules.CHA_FANOUT_LIMIT) c.edges.computeIfAbsent(id, k -> new LinkedHashSet<>()).addAll(xb);
+            else if (protocol)
+                c.argContractFloor.computeIfAbsent(id, k -> new TreeSet<>()).add(declType + "." + name + desc + "\t" + declType + "\tS4");
+            else {
+                c.viaCross.computeIfAbsent(id, k -> EffectSet.empty()).add(Effect.UNKNOWN);
+                c.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                        .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, declType.replace('/', '.') + "." + name));
+            }
+            resolved |= !xb.isEmpty();
+        }
         if (DEBUG)
             System.err.println("CT\tRESOLVE\t" + sp + "\t" + id + "\t" + declType + "." + name + desc + "\tlocal="
                     + local.size() + "\tdep=" + depDeclaring + (recv != null ? "\texact=" + recv : ""));

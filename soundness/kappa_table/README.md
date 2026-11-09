@@ -152,3 +152,45 @@ fixed in the leaf; the table inherits the fix by regeneration.
 The residual is the table's own: a P line is a claim about the body the JVM resolves in the SURVEYED version, not
 an override shipped in another jar (a PROJECT override is still reached by CHA — pinned in
 `LeafOverChargeR1052Test`).
+
+## A receiver the consumer supplies, and the `D` lines (SOUNDNESS R1565 / R1569)
+
+The generator scans each framework jar ALONE, so to that scan the jar is the whole program. SOUNDNESS R1299 bounds an
+`Object`-owned `hashCode`/`equals`/`toString` by the receiver's declared PROJECT type, which is right for a closed-world
+scan, and here it made joda's `PreciseDurationField.hashCode` (`getType().hashCode()`) read pure: CHA over
+`DurationFieldType` finds only joda's own pure implementers. A consumer that hands in its own `DurationFieldType` whose
+`hashCode` reads a file runs that read (EXECUTED), and since the 2026-11-07 regeneration dropped the stale `U` line the
+call read pure: `deny Fs Unknown` 1 -> 0 against 0.40.18, on 13 members (ehcache `EventListenerWrapper`, jakarta.mail
+`AddressTerm`/`FromTerm`, joda's duration fields, `DateTimeComparator` and the `Period` family). The same shape without
+the `Object` protocol: spring-data-mongodb `AggregationSpELExpression.toDocument(ctx)` wraps `ctx` into a context object it
+creates and calls `ctx.getReference(..)` through it (R1569). R1511's `T` lines cover a callback on `this` or on a direct
+parameter only.
+
+The scan already names every such dispatch on its row (`dispatchesOn`, SPEC §4 obligation 1), and a CHAINED consumer
+joins its own implementers of it. The `D` lines give the unchained arm the same key: per consumer-callable member, the
+union over the bodies the call can run of each body's `dispatchesOn`, closed over the report's own `calls` (the closure
+`Candor#depTransitiveDispatch` takes), kept where a consumer can implement the member (`FrameworkReachGen#openKey`: a
+public, non-final surveyed type with an accessible constructor or an interface, the member overridable). Four narrowings,
+each measured on the corpus A/B before it was made:
+
+* a dispatch on the body's own `this` is not a key (`#onThis`): that is R1511's `T` line, which resolves it from the
+  receiver's class; as a key, jna's `Structure.write()` put every jna-platform structure's override on every call;
+* a `calls` edge counts only where the caller's bytecode has a call on a non-JDK owner related to the callee's class
+  (`#justified`): the scan also edges every in-jar implementer of a JDK interface (`Iterator.next`), and through one of
+  them spring-core's `FastByteArrayOutputStream.resize` "reached" `DataBuffer.readableByteCount`;
+* an abstract member's keys come from its implementers in the DECLARING jar only: servlet's `FilterChain.doFilter` pulled
+  in the web stack through the containers' chains, which a consumer may not have (R1097's reason);
+* a key whose every call site in the body is on a final class or an enum is not one (`#onlyClosedSites`): the key is
+  spelled with the declaring abstraction (`JacksonFeature.enabledByDefault()`) while the value is the jar's own constant.
+
+Closing over this generator's own edges plus R1096's override union instead was measured too: the lists grew to 40 MB
+(p90 2,260 members). `E` lines are
+the distinct lists (by `K` number), `K` lines the dispatched members; a `D` line is written only where it differs from
+what the walk up the `H` lines reads, as for `T`. `Cha#frameworkDispatchJoin` edges the consumer's implementers of each
+member (its CHA, its lambdas, and the classes that reach the owner only through a framework class), past the CHA bound
+discloses `Unknown[dispatch]`, and adds nothing where the consumer implements none -- the framework's own implementers are
+already in the row, exactly as in the chained join. A resolution, additive; `CANDOR_R1565=0` switches the join off.
+
+Its precision is the chained join's: the key says the body dispatches on that abstraction, not that the receiver is the
+consumer's. `Days.hashCode` hashes a joda singleton field type, and a consumer with a file-reading `DurationFieldType`
+anywhere in its scan is charged it there too (an over-charge, never a silence).

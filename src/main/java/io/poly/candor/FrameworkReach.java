@@ -279,6 +279,43 @@ final class FrameworkReach {
         return List.of();
     }
 
+    // ── SOUNDNESS R1565/R1569 ── the abstraction members a framework member's closure dispatches on (D/E/K lines)
+    private static final Map<String, String> DISPATCH = new HashMap<>(), DISPATCH_RAW = new HashMap<>(), DISPATCH_KEYS = new HashMap<>();
+    private static final Map<String, List<String>> DISPATCH_LISTS = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** SOUNDNESS R1565/R1569 — the members a consumer can implement that the surveyed body(ies) a call to
+     *  {@code internalOwner.name+desc} can run dispatch on, closed over what they run (FrameworkReachGen#openKey,
+     *  #reportDispatch): the unchained arm's copy of a chained row's transitive {@code dispatchesOn}. Empty when the table
+     *  has no D line for the member or is off. */
+    static List<String> dispatchMembers(String internalOwner, String name, String desc) {
+        if (DISABLED) return List.of();
+        if (hedge == null) loadHedge();
+        // A D line is written only where it differs from what this walk reads one class up (FrameworkReachGen#dispatchLines):
+        // the first class up the H lines' first entries that has one answers, an empty list included.
+        String sig = "." + name + desc, id = null;
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (String c = internalOwner; c != null && seen.add(c); ) {
+            id = DISPATCH.get(c + sig);
+            if (id != null) break;
+            List<String> up = SUPERS.get(c);
+            c = up == null || up.isEmpty() ? null : up.get(0);
+        }
+        if (id == null) return List.of();
+        List<String> l = DISPATCH_LISTS.get(id);
+        if (l != null) return l;
+        String raw = DISPATCH_RAW.get(id);
+        if (raw == null) throw new IllegalStateException("candor: " + HEDGE_RESOURCE + " names dispatch list " + id + " it lacks");
+        List<String> out = new ArrayList<>();
+        if (!raw.isEmpty()) for (String k : raw.split(",")) {
+            String m = DISPATCH_KEYS.get(k);
+            if (m == null) throw new IllegalStateException("candor: " + HEDGE_RESOURCE + " names dispatched member " + k + " it lacks");
+            out.add(m);
+        }
+        l = List.copyOf(out);
+        DISPATCH_LISTS.put(id, l);
+        return l;
+    }
+
     static int hedgeSize() { return hedge == null ? loadHedge().size() : hedge.size(); }
 
     private static synchronized Map<String, String> loadHedge() {
@@ -311,6 +348,12 @@ final class FrameworkReach {
                         int t2 = v.indexOf('\t');
                         if (t2 <= 0) throw new IllegalStateException("candor: " + HEDGE_RESOURCE + " bad line: " + line);
                         (kind.equals("T") ? TEMPLATE : kind.equals("L") ? TEMPLATE_RAW : TEMPLATE_MEMBERS)
+                                .put(v.substring(0, t2), v.substring(t2 + 1));
+                    }
+                    case "D", "E", "K" -> { // SOUNDNESS R1565/R1569: D member <TAB> list; E list <TAB> K numbers; K number <TAB> member
+                        int t2 = v.indexOf('\t');
+                        if (t2 <= 0) throw new IllegalStateException("candor: " + HEDGE_RESOURCE + " bad line: " + line);
+                        (kind.equals("D") ? DISPATCH : kind.equals("E") ? DISPATCH_RAW : DISPATCH_KEYS)
                                 .put(v.substring(0, t2), v.substring(t2 + 1));
                     }
                     case "O" -> {      // SOUNDNESS R1097: key <TAB> overriding classes, comma-separated

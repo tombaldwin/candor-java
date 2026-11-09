@@ -256,6 +256,250 @@ public class FrameworkReachGen {
         return sup;
     }
 
+    // ── SOUNDNESS R1565/R1569 — A FRAMEWORK BODY DISPATCHES ON A RECEIVER THE CONSUMER CAN SUPPLY ───────────────────
+    /** member -> the open abstraction members its closure dispatches on (D lines). */
+    static final TreeMap<String, TreeSet<String>> DISPATCH = new TreeMap<>();
+    /** body -> the same, from the scan's own report: its {@code dispatchesOn} closed over its published {@code calls}. */
+    static final Map<Integer, Set<String>> NODE_DISPATCH = new HashMap<>();
+
+    /** SOUNDNESS R1565/R1569 -- the join key a CHAINED report already gives a consumer, for the unchained arm.
+     *
+     *  <p><b>The silence.</b> R1299 bounds an {@code Object}-owned {@code hashCode}/{@code equals}/{@code toString} by
+     *  the receiver's declared PROJECT type, which is right for a closed-world scan. The generator scans each framework
+     *  jar ALONE, so the jar is "the project": joda's {@code PreciseDurationField.hashCode} runs
+     *  {@code getType().hashCode()}, CHA over {@code DurationFieldType} finds joda's own pure implementers, and the body
+     *  reads pure. A consumer that passes its own {@code DurationFieldType} whose {@code hashCode} reads a file (EXECUTED:
+     *  one read) then read the call pure: {@code deny Fs Unknown} 1 -> 0 against 0.40.18, whose stale table still had
+     *  the U line. The same holds where the receiver is a parameter the body wraps into an object it creates
+     *  ({@code AggregationSpELExpression.toDocument(ctx)} -> {@code AggregationExpressionTransformationContext(.., ctx)}
+     *  -> {@code getReference}).
+     *
+     *  <p><b>The fact.</b> The scan already names every such dispatch on its row ({@code dispatchesOn}, SPEC §4
+     *  obligation 1), and a CHAINED consumer joins its own implementers of it (Candor#inheritDepFn, contributor 2) --
+     *  measured, it charges {@code Fs} on 11 of the 15 executed cases. These lines put the same key in the table: per
+     *  consumer-callable member, the union over the bodies a call can run of each body's {@code dispatchesOn} -- less the
+     *  ones on its own receiver ({@link #onThis}) -- closed over the report's {@code calls} as {@link #closeDispatch}
+     *  filters them, kept only where a consumer can implement the member ({@link #openKey}). A miss adds nothing at the
+     *  consumer, exactly as in the chained join: the jar's own implementers are already in the row. */
+    static final Map<String, List<Integer>> FN_NODES = new HashMap<>();
+    static final Map<Integer, List<String>> NODE_CALLS = new HashMap<>();
+
+    /** The scan's own {@code calls} graph (what Candor#depTransitiveDispatch walks for a chained row), less every edge the
+     *  caller's bytecode does not justify by a call on a SURVEYED owner related to the callee's class: the scan also edges
+     *  a JDK interface's in-jar implementers (and a {@code calls} qual names every overload), and through those spring-core's
+     *  {@code FastByteArrayOutputStream.resize} (an {@code Iterator.next}) reached {@code LimitedDataBufferList.add} and put
+     *  {@code DataBuffer.readableByteCount} on its callers (measured). Not this generator's own edges plus R1096's override
+     *  union: closed over those the lists grew to 40 MB (p90 2,260 members). */
+    static void closeDispatch(int N) {
+        List<List<Integer>> rev = new ArrayList<>(N);
+        for (int n = 0; n < N; n++) rev.add(new ArrayList<>());
+        for (Map.Entry<Integer, List<String>> e : NODE_CALLS.entrySet()) {
+            int n = e.getKey();
+            Set<Integer> out = new TreeSet<>();
+            for (String q : e.getValue())
+                for (int t : FN_NODES.getOrDefault(q, List.of())) if (t != n && justified(n, t)) out.add(t);
+            for (int t : out) rev.get(t).add(n);
+        }
+        ArrayDeque<Integer> wl = new ArrayDeque<>(new TreeSet<>(NODE_DISPATCH.keySet()));
+        boolean[] in = new boolean[N];
+        for (int n : wl) in[n] = true;
+        while (!wl.isEmpty()) {
+            int n = wl.poll(); in[n] = false;
+            Set<String> mine = NODE_DISPATCH.get(n);
+            if (mine == null) continue;
+            for (int p : rev.get(n)) {
+                Set<String> theirs = NODE_DISPATCH.computeIfAbsent(p, z -> new TreeSet<>());
+                if (theirs.addAll(mine) && !in[p]) { wl.add(p); in[p] = true; }
+            }
+        }
+    }
+
+    /** Whether body {@code n} has a call that can run body {@code t}: same name and descriptor, on a non-JDK owner that is
+     *  {@code t}'s class, a supertype of it (a dispatch) or a subtype of it (an inherited body); a lambda body only from the
+     *  body that creates it; a class initialiser always (whatever triggers it). */
+    static boolean justified(int n, int t) {
+        MethodNode tm = nodeMethod.get(t), mn = nodeMethod.get(n);
+        if (tm.name.equals("<clinit>")) return true;
+        if (mn.instructions == null) return false;
+        String to = nodeOwner.get(t);
+        int j = nodeJar.get(n);
+        for (AbstractInsnNode in : mn.instructions) {
+            // a lambda body: only the one this body CREATES. The scan also edges every in-jar lambda implementing a SAM the
+            // body calls, a JDK `Supplier`/`Function` included -- the JDK-interface spread `calls` has for classes too.
+            if (in instanceof InvokeDynamicInsnNode x && x.bsmArgs.length > 1 && x.bsmArgs[1] instanceof Handle h
+                    && h.getOwner().equals(to) && h.getName().equals(tm.name) && h.getDesc().equals(tm.desc)) return true;
+            if (!(in instanceof MethodInsnNode m) || !m.name.equals(tm.name) || !m.desc.equals(tm.desc)) continue;
+            if (m.owner.equals(to)) return true;
+            if (jdkOwner(m.owner) || runtimeOwner(m.owner)) continue;
+            if (supertypes(j, to).contains(m.owner) || supertypes(j, m.owner).contains(to)) return true;
+        }
+        return false;
+    }
+
+    static final Map<String, Set<String>> SUPERTYPES = new HashMap<>();
+    static Set<String> supertypes(int j, String c0) {
+        String mk = j + "|" + c0;
+        Set<String> memo = SUPERTYPES.get(mk);
+        if (memo != null) return memo;
+        Set<String> out = new HashSet<>();
+        ArrayDeque<String> q = new ArrayDeque<>(List.of(c0));
+        while (!q.isEmpty()) {
+            String c = q.poll();
+            if (!out.add(c)) continue;
+            ClassNode cn = cls(jarOf(j, c), c);
+            if (cn == null) continue;
+            if (cn.superName != null) q.add(cn.superName);
+            q.addAll(cn.interfaces);
+        }
+        SUPERTYPES.put(mk, out);
+        return out;
+    }
+
+    /** Every member gets an entry, an empty one included: the emitted lines are compressed against the walk up the H
+     *  lines (as the T lines are), and an empty list is what stops a subclass inheriting its superclass's. */
+    /** Whether {@code key} is a member body {@code n} dispatches on its OWN receiver: a call whose receiver is {@code this}
+     *  ({@link #receiverCalls}, slot 0) with the key's name and descriptor, on a type {@code n}'s class is. Those are
+     *  R1511's T lines, which resolve them from the receiver's class; joined here instead, every consumer subclass's
+     *  override would land on every call of every member (measured: jna's {@code Structure.write()} put each
+     *  jna-platform structure's override on 13,250 call sites). */
+    static boolean onThis(int n, String key) {
+        int paren = key.indexOf('('), dot = key.lastIndexOf('.', paren);
+        String owner = key.substring(0, dot), sig = key.substring(dot + 1);
+        boolean hit = false;
+        for (Object[] rc : receiverCalls(n)) {
+            MethodInsnNode m = (MethodInsnNode) rc[0];
+            if ((Integer) rc[1] == 0 && (m.name + m.desc).equals(sig)) { hit = true; break; }
+        }
+        if (!hit) return false;
+        ArrayDeque<String> q = new ArrayDeque<>(List.of(nodeOwner.get(n)));
+        Set<String> seen = new HashSet<>();
+        int j = nodeJar.get(n);
+        while (!q.isEmpty()) {
+            String c = q.poll();
+            if (!seen.add(c)) continue;
+            if (c.equals(owner)) return true;
+            ClassNode cn = cls(jarOf(j, c), c);
+            if (cn == null) continue;
+            if (cn.superName != null) q.add(cn.superName);
+            q.addAll(cn.interfaces);
+        }
+        return false;
+    }
+
+    /** Whether every call in body {@code n} that the key names (its name and descriptor) is on a receiver whose STATIC type
+     *  no consumer can implement: a final class or an enum. The key is spelled with the member's declaring abstraction
+     *  (jackson's {@code JsonGenerator.Feature.enabledByDefault()} is published as {@code JacksonFeature.enabledByDefault()}),
+     *  which reads open, while the value is one of the jar's own enum constants. An {@code Object}-owned call (javac's
+     *  spelling of {@code x.hashCode()} on an interface-typed {@code x}) is decided by the key, so it never counts as
+     *  closed, and neither does a body with no such call (the key came another way). */
+    static boolean onlyClosedSites(int n, String key) {
+        int paren = key.indexOf('('), dot = key.lastIndexOf('.', paren);
+        String sig = key.substring(dot + 1);
+        MethodNode mn = nodeMethod.get(n);
+        if (mn.instructions == null) return false;
+        boolean any = false;
+        int j = nodeJar.get(n);
+        for (AbstractInsnNode in : mn.instructions) {
+            if (!(in instanceof MethodInsnNode m) || !(m.name + m.desc).equals(sig) || m.getOpcode() == Opcodes.INVOKESTATIC) continue;
+            any = true;
+            if (m.owner.startsWith("[") || m.owner.equals("java/lang/Object")) return false;
+            ClassNode cn = cls(jarOf(j, m.owner), m.owner);
+            if (cn == null || (cn.access & (Opcodes.ACC_FINAL | Opcodes.ACC_ENUM)) == 0) return false;
+        }
+        return any;
+    }
+
+    static void recordDispatch(String member, Collection<Integer> roots) {
+        TreeSet<String> u = DISPATCH.computeIfAbsent(member, k -> new TreeSet<>());
+        for (int r : roots) {
+            Set<String> d = NODE_DISPATCH.get(r);
+            if (d != null) u.addAll(d);
+        }
+    }
+
+    /** Whether a consumer can supply an implementer of {@code owner.name+desc}: a surveyed framework type (not the JDK,
+     *  a language runtime or a logging frontier), public, neither final nor an enum or annotation, a class only with a
+     *  public or protected constructor, and the member overridable there (Object's members count: a consumer class
+     *  declares them). */
+    static boolean openKey(String key) {
+        int paren = key.indexOf('('), dot = paren < 0 ? -1 : key.lastIndexOf('.', paren);
+        if (dot <= 0) return false;
+        String owner = key.substring(0, dot), name = key.substring(dot + 1, paren), desc = key.substring(paren);
+        if (owner.startsWith("[") || jdkOwner(owner) || runtimeOwner(owner) || name.startsWith("<")) return false;
+        List<Integer> js = classJars.get(owner);
+        if (js == null) return false;
+        int sl = owner.lastIndexOf('/');
+        if (sl <= 0 || !Candor.kappaCovers(owner.substring(0, sl).replace('/', '.'))) return false;
+        ClassNode cn = cls(js.get(0), owner);
+        if (cn == null || (cn.access & Opcodes.ACC_PUBLIC) == 0
+                || (cn.access & (Opcodes.ACC_FINAL | Opcodes.ACC_ENUM | Opcodes.ACC_ANNOTATION)) != 0) return false;
+        if ((cn.access & Opcodes.ACC_INTERFACE) == 0) {
+            boolean ctor = false;
+            for (MethodNode m : cn.methods)
+                if (m.name.equals("<init>") && (m.access & (Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED)) != 0) ctor = true;
+            if (!ctor) return false;
+        }
+        return overridable(js.get(0), owner, name, desc);
+    }
+
+    /** The D/E/K lines: each dispatched member written once (K), each distinct list once (E), and a D line only where a
+     *  member's list differs from what the consumer's walk up the H lines' first entries reads
+     *  (FrameworkReach#dispatchMembers) -- the T lines' compression ({@link #templateLines} (1)), exact by the same
+     *  argument: an override with a different list, an EMPTY one included, always gets its own line. */
+    static List<String> dispatchLines() {
+        Map<String, Set<String>> walk = new HashMap<>();
+        TreeMap<String, Set<String>> emit = new TreeMap<>();
+        for (String k : DISPATCH.keySet()) {
+            int p = k.indexOf('('), dot = k.lastIndexOf('.', p);
+            String c = k.substring(0, dot), sig = k.substring(dot + 1);
+            Set<String> mine = DISPATCH.get(k);
+            LinkedHashSet<String> h = hierarchy().get(c);
+            Set<String> up = h == null || h.isEmpty() ? Set.of() : readDispatch(h.iterator().next(), sig, walk, emit, new HashSet<>());
+            if (!mine.equals(up)) emit.put(k, mine);
+        }
+        TreeMap<String, Integer> kid = new TreeMap<>();
+        for (Set<String> l : emit.values()) for (String k : l) kid.putIfAbsent(k, 0);
+        int n = 0;
+        for (Map.Entry<String, Integer> e : kid.entrySet()) e.setValue(n++);
+        TreeMap<String, Integer> lid = new TreeMap<>();
+        Map<String, String> enc = new TreeMap<>();
+        for (Map.Entry<String, Set<String>> e : emit.entrySet()) {
+            StringJoiner sj = new StringJoiner(",");
+            List<Integer> ids = new ArrayList<>();
+            for (String k : e.getValue()) ids.add(kid.get(k));
+            Collections.sort(ids);
+            for (int i : ids) sj.add(String.valueOf(i));
+            enc.put(e.getKey(), sj.toString());
+            lid.putIfAbsent(sj.toString(), 0);
+        }
+        n = 0;
+        for (Map.Entry<String, Integer> e : lid.entrySet()) e.setValue(n++);
+        List<String> out = new ArrayList<>();
+        for (Map.Entry<String, Integer> e : kid.entrySet()) out.add("K\t" + e.getValue() + "\t" + e.getKey());
+        for (Map.Entry<String, Integer> e : lid.entrySet()) out.add("E\t" + e.getValue() + "\t" + e.getKey());
+        for (Map.Entry<String, String> e : enc.entrySet()) out.add("D\t" + e.getKey() + "\t" + lid.get(e.getValue()));
+        int nonEmpty = 0;
+        for (Set<String> l : DISPATCH.values()) if (!l.isEmpty()) nonEmpty++;
+        System.err.println("framework-reach: " + nonEmpty + " members dispatch on a consumer-implementable member, D lines " + enc.size() + ", "
+                + kid.size() + " distinct, " + lid.size() + " lists (R1565/R1569)");
+        return out;
+    }
+
+    /** {@link #readTemplate} over the D lists. */
+    static Set<String> readDispatch(String c, String sig, Map<String, Set<String>> walk, TreeMap<String, Set<String>> emit, Set<String> seen) {
+        String k = c + "." + sig;
+        Set<String> memo = walk.get(k);
+        if (memo != null) return memo;
+        if (!seen.add(c)) return Set.of();
+        Set<String> mine = DISPATCH.get(k), up = Set.of(), r;
+        LinkedHashSet<String> h = hierarchy().get(c);
+        if (h != null && !h.isEmpty()) up = readDispatch(h.iterator().next(), sig, walk, emit, seen);
+        if (mine != null && !mine.equals(up)) { emit.put(k, mine); r = mine; }
+        else r = up;
+        walk.put(k, r);
+        return r;
+    }
+
     // ── SOUNDNESS R1511 — A TEMPLATE METHOD CALLS BACK AN OVERRIDE ON ITS OWN RECEIVER ─────────────────────────────────
     /** key (a subclassable surveyed class . member) -> the overridable members its body runs on {@code this}. */
     static final TreeMap<String, TreeSet<String>> TEMPLATE = new TreeMap<>();
@@ -522,6 +766,18 @@ public class FrameworkReachGen {
             }
             for (JsonElement fe : r.getAsJsonArray("functions")) {
                 JsonObject f = fe.getAsJsonObject();
+                {   // SOUNDNESS R1565/R1569 -- the body's own dispatches on a consumer-implementable member, and its `calls`
+                    Integer nid = f.has("hash") ? nodeId.get(j + "|" + f.get("hash").getAsString()) : null;
+                    if (nid != null && f.has("fn") && !f.get("fn").isJsonNull()) {
+                        String fn = f.get("fn").getAsString();
+                        FN_NODES.computeIfAbsent(j + "|" + fn, z -> new ArrayList<>()).add(nid);
+                        if (f.has("calls")) for (JsonElement x : f.getAsJsonArray("calls"))
+                            NODE_CALLS.computeIfAbsent(nid, z -> new ArrayList<>()).add(j + "|" + x.getAsString());
+                    }
+                    if (nid != null && f.has("dispatchesOn")) for (JsonElement x : f.getAsJsonArray("dispatchesOn"))
+                        if (openKey(x.getAsString()) && !onThis(nid, x.getAsString()) && !onlyClosedSites(nid, x.getAsString()))
+                            NODE_DISPATCH.computeIfAbsent(nid, k -> new TreeSet<>()).add(x.getAsString());
+                }
                 if (!f.has("hash") || !f.has("direct")) continue;
                 if (f.has("inferred")) {
                     JsonArray inf = f.getAsJsonArray("inferred");
@@ -545,6 +801,7 @@ public class FrameworkReachGen {
             }
         }
         for (int n = 0; n < N; n++) if (eff[n] != 0) { ptr[n] = new int[CONC.length]; Arrays.fill(ptr[n], n); }
+        closeDispatch(N);                                                                // SOUNDNESS R1565/R1569
         // 4. statically-resolved edges -> reverse adjacency
         List<int[]> preds = new ArrayList<>(N);
         int[][] succ = new int[N][];
@@ -706,7 +963,12 @@ public class FrameworkReachGen {
                     List<Integer> tg = resolve(j, cn.name, name, desc);
                     if (framework && !name.equals("<clinit>")) {
                         if (tg.isEmpty()) { if (!name.equals("<init>") && implementersUnvouched(cn.name, name, desc, eff))
-                            HEDGE.putIfAbsent(cn.name + "." + sig, "A"); }
+                            HEDGE.putIfAbsent(cn.name + "." + sig, "A");
+                            // the implementers in the DECLARING jar only: one in another surveyed jar may not be on the
+                            // consumer's class path (R1097's reason; measured, servlet `FilterChain.doFilter` pulled the web
+                            // stack's whole closure in through the containers' chains)
+                            if (!name.equals("<init>")) { final int jj = j; recordDispatch(cn.name + "." + sig,
+                                    implementerBodies(cn.name, name, desc).stream().filter(t -> nodeJar.get(t) == jj).toList()); } }
                         else if (UNK_ONLY.containsAll(tg)) HEDGE.putIfAbsent(cn.name + "." + sig, "U");
                         else if (tg.stream().allMatch(FrameworkReachGen::unkAny) && (FLOOR.contains(cn.name + "." + sig)
                                 || tg.stream().allMatch(t -> eff[t] == 0))) FLOORED.add(cn.name + "." + sig);
@@ -736,6 +998,7 @@ public class FrameworkReachGen {
                             if ((extra & ~(declared | declaredLost)) != 0) BROAD.add(key);
                         }
                     }
+                    if (framework) recordDispatch(key, rs);                                // SOUNDNESS R1565/R1569
                     int mask = 0, lost = 0;
                     String rep = null;
                     for (int r : rs) {
@@ -821,6 +1084,7 @@ public class FrameworkReachGen {
             for (String pk : PURE) hl.add("P\t" + pk);
             hl.addAll(hierarchyLines());                                                 // SOUNDNESS R1509
             hl.addAll(templateLines());                                                  // SOUNDNESS R1511
+            hl.addAll(dispatchLines());                                                  // SOUNDNESS R1565/R1569
             Collections.sort(hl);
             MessageDigest hm = MessageDigest.getInstance("SHA-256");
             for (String r : hl) hm.update((r + "\n").getBytes(StandardCharsets.UTF_8));
@@ -841,6 +1105,10 @@ public class FrameworkReachGen {
             hb.append("#     or `p<i>:owner.member` (dispatched on the called body's i-th parameter).\n");
             hb.append("#     Written only where it differs from what the walk up the H lines' first entries reads. See Cha#templateCallbacks.\n");
             hb.append("# L = a numbered list of T entries, members named by M number; M = a numbered member (R1511).\n");
+            hb.append("# D = a member whose body, closed over what it runs (the scan's own `calls`), dispatches on an abstraction a\n");
+            hb.append("#     CONSUMER can implement -- a receiver it can supply (a field, an element, a wrapped argument); the number of\n");
+            hb.append("#     the E line listing those members follows. E = a numbered list of K numbers; K = a numbered dispatched member\n");
+            hb.append("#     (R1565/R1569). The consumer joins its own implementers of each, as it joins a chained row's `dispatchesOn`.\n");
             hb.append("# C = a member whose closure reaches a dispatch the table cannot follow, where a NAME rule's charge used to\n");
             hb.append("#     stand in for it and no surveyed implementer carries that effect; the unfollowed member follows (R1468).\n");
             hb.append("# entries ").append(hl.size()).append('\n');
@@ -1101,7 +1369,8 @@ public class FrameworkReachGen {
         String key = owner + "." + name + desc;
         List<Integer> hit = IMPL_BODIES.get(key);
         if (hit != null) return hit;
-        implementersUnvouched(owner, name, desc, EFF == null ? new int[nodeKey.size()] : EFF);    // builds `subs`
+        if (EFF == null && ZERO_EFF == null) ZERO_EFF = new int[nodeKey.size()];
+        implementersUnvouched(owner, name, desc, EFF == null ? ZERO_EFF : EFF);    // builds `subs`
         ArrayDeque<String> q = new ArrayDeque<>(subs.getOrDefault(owner, List.of()));
         Set<String> seen = new HashSet<>();
         List<Integer> out = new ArrayList<>();
@@ -1121,6 +1390,7 @@ public class FrameworkReachGen {
         return out;
     }
     static final Map<String, List<Integer>> IMPL_BODIES = new HashMap<>();
+    static int[] ZERO_EFF;
 
     static void hiddenReach(int N, int[][] succ, int[] eff) {
         int[] own = new int[N];

@@ -5116,6 +5116,7 @@ public class Candor {
         }
         boolean springTyped = declarativeIoRules(ctx, s, min);
         Cha.templateCallbacks(ctx, s, min);                       // SOUNDNESS R1511 — additive, see the method
+        Cha.frameworkDispatchJoin(ctx, s, min);                   // SOUNDNESS R1565/R1569 — additive, see the method
 
         int op = min.getOpcode();
         // A static call triggers the owner's class-load → its `<clinit>` runs.

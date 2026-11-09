@@ -9,6 +9,21 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **⚠ A framework call whose body dispatches on an object the consumer supplies is now charged the consumer's
+  implementer (SOUNDNESS R1565, R1569).** joda's `PreciseDurationField.hashCode` runs `getType().hashCode()`, ehcache's
+  `EventListenerWrapper.hashCode`/`equals` run `listener.hashCode()`/`equals`, jakarta.mail's `FromTerm.hashCode` hashes
+  its `Address`, the `Period` family hashes the `DurationFieldType`s of a `PeriodType` built through its protected
+  constructor, and spring-data-mongodb's `AggregationSpELExpression.toDocument(ctx)` wraps `ctx` into a context it
+  creates and calls `ctx.getReference(..)`. A consumer class whose override reads a file runs that read (executed, 15
+  members), and since the framework table's 2026-11-07 regeneration the call read pure: `deny Fs Unknown` exited 1 on
+  0.40.18 (a stale `U` line) and 0 on main. The table's scan sees each framework jar alone, so SOUNDNESS R1299's
+  closed-world bound resolved those receivers to the jar's own pure implementers. The table gains `D` lines (with `E`/`K`
+  number tables): per member, the consumer-implementable members its body dispatches on, from the scan's own
+  `dispatchesOn` closed over its `calls`. The consumer joins its own implementers of each, as it joins a chained row's
+  `dispatchesOn`. A resolution: on all 15 executed cases `deny Fs` now exits 1, unchained and chained. A consumer that
+  implements none of them reads as before. Additive. `CANDOR_R1565=0` switches the join off (a measurement arm). The
+  hedge table grows 26.2 MB -> 36.2 MB. R1299's closed-world bound for a project scan is unchanged.
+
 - **⚠ A scope no longer matches inside an overload's parameter list (SOUNDNESS R1548, R1549).** An overloaded method whose
   parameter simple names collide is spelled with fully-qualified parameter types, `bank.Bank.pay(ua.user.User)`, and scope
   matching split that whole name on `.`/`$`, so the parameter types became path segments. `only app -> user` therefore

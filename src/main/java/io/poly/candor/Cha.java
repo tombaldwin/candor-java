@@ -1454,6 +1454,67 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         }
     }
 
+    /** The kill switch: {@code CANDOR_R1565=0} makes {@link #frameworkDispatchJoin} join nothing (a measurement arm). */
+    static final boolean R1565 = !"0".equals(System.getenv("CANDOR_R1565"));
+    static final boolean R1565_DEBUG = System.getenv("CANDOR_R1565_DEBUG") != null;
+
+    /** SOUNDNESS R1565/R1569 — a call into a framework member whose body dispatches on an abstraction the consumer can
+     *  implement is joined to the consumer's OWN implementers of that member, as a chained row's {@code dispatchesOn}
+     *  is (Candor#inheritDepFn, contributor 2).
+     *
+     *  <p><b>The silence.</b> joda's {@code PreciseDurationField.hashCode} runs {@code getType().hashCode()}; ehcache's
+     *  {@code EventListenerWrapper.hashCode} runs {@code listener.hashCode()}; spring-data-mongodb's
+     *  {@code AggregationSpELExpression.toDocument(ctx)} wraps {@code ctx} and calls {@code ctx.getReference(..)}. Each
+     *  receiver is one the CONSUMER supplies, the framework table's scan saw only the jar's own (pure) implementers, and
+     *  since the 2026-11-07 regeneration the table said nothing: a consumer type whose override reads a file (EXECUTED,
+     *  15 members) read pure, {@code deny Fs Unknown} 1 -> 0 against 0.40.18. R1511's T lines join callbacks on
+     *  {@code this} and on a direct parameter only.
+     *
+     *  <p><b>The join.</b> The table's D lines name, per member, the consumer-implementable members its closure
+     *  dispatches on (FrameworkReachGen#openKey). Here each is resolved over this scan's implementers — its CHA, its
+     *  lambdas, and the classes that reach the owner only through a framework class ({@link #crossBoundaryTargets}, which
+     *  the chained join lacks) — and edged within {@link Rules#CHA_FANOUT_LIMIT}; past it, disclosed
+     *  {@code Unknown[dispatch]}. A member with no consumer implementer adds nothing, as in the chained join: the
+     *  framework's own implementers are already in the table's row. ADDITIVE only. A project receiver that inherits the
+     *  framework body is looked up under its nearest framework superclass; one with its own body is the scan's CHA's. */
+    static void frameworkDispatchJoin(AnalysisContext c, MethodScan s, MethodInsnNode min) {
+        if (!R1565 || FrameworkReach.DISABLED) return;
+        if (min.owner.isEmpty() || min.owner.charAt(0) == '[' || min.name.equals("<clinit>")) return;
+        if (FrameworkReach.jdkOwned(min.owner) || languageRuntimeOwned(min.owner)) return;
+        String f = min.owner;
+        if (c.byName.containsKey(f)) {
+            if (min.getOpcode() == Opcodes.INVOKESTATIC || min.name.equals("<init>")) return;
+            if (projectBodyOf(c, f, min.name, min.desc) != null) return;
+            f = firstFrameworkSuper(c, f);
+            if (f == null) return;
+        }
+        List<String> keys = FrameworkReach.dispatchMembers(f, min.name, min.desc);
+        if (keys.isEmpty()) return;
+        Set<String> bodies = new LinkedHashSet<>();
+        boolean broad = false;
+        String broadKey = null;
+        for (String key : keys) {
+            int paren = key.indexOf('('), dot = paren < 0 ? -1 : key.lastIndexOf('.', paren);
+            if (dot <= 0) continue;
+            String o = key.substring(0, dot), n = key.substring(dot + 1, paren), d = key.substring(paren);
+            List<String> impls = new ArrayList<>(chaTargets(o, n, d));
+            for (String l : samLambdaImplementors(o, n, d)) if (!impls.contains(l)) impls.add(l);
+            for (String x : crossBoundaryTargets(o, n, d)) if (!impls.contains(x)) impls.add(x);
+            impls.remove(s.id);
+            if (impls.isEmpty()) continue;
+            if (impls.size() > Rules.CHA_FANOUT_LIMIT && !isClosedHierarchy(o)) { broad = true; broadKey = o.replace('/', '.') + "." + n; continue; }
+            bodies.addAll(impls);
+            if (R1565_DEBUG) for (String b : impls)
+                System.err.println("R1565E\t" + s.id + "\t" + f + "." + min.name + min.desc + "\t" + key + "\t" + b);
+        }
+        if (!bodies.isEmpty()) c.edges.computeIfAbsent(s.id, k -> new LinkedHashSet<>()).addAll(bodies);
+        if (broad) {
+            s.dir.add(io.poly.candor.model.Effect.UNKNOWN);
+            c.unknownWhy.computeIfAbsent(s.id, k -> new TreeSet<>()).add(io.poly.candor.model.UnknownReason.of(
+                    io.poly.candor.model.UnknownReason.Kind.DISPATCH, broadKey));
+        }
+    }
+
     /** For a concrete project class {@code p} whose inherited body for {@code name+desc} is framework class {@code f}'s:
      *  the project bodies {@code p} runs for each member the table says that body calls back on {@code this}. */
     private static void templateBodies(AnalysisContext c, String p, String f, String name, String desc, Set<String> out,

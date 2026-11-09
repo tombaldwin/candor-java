@@ -20,9 +20,17 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   closed-world bound resolved those receivers to the jar's own pure implementers. The table gains `D` lines (with `E`/`K`
   number tables): per member, the consumer-implementable members its body dispatches on, from the scan's own
   `dispatchesOn` closed over its `calls`. The consumer joins its own implementers of each, as it joins a chained row's
-  `dispatchesOn`. A resolution: on all 15 executed cases `deny Fs` now exits 1, unchained and chained. A consumer that
-  implements none of them reads as before. Additive. `CANDOR_R1565=0` switches the join off (a measurement arm). The
-  hedge table grows 26.2 MB -> 36.2 MB. R1299's closed-world bound for a project scan is unchanged.
+  `dispatchesOn`, and also looks a project receiver up under the framework INTERFACES it implements (an inherited
+  default body). A resolution: on all 15 executed cases `deny Fs` now exits 1, unchained and chained, and on three more
+  shapes that were silent on 0.40.18 and main too (executed): an interface default (`AutowireCandidateResolver`), a
+  decorator that calls `super.m()` and its delegate's `m()` (dbunit's `ConditionalSetBiValueComparer.toString`), and an
+  implementer in ANOTHER surveyed jar (spring-session's `HttpSession` adapter running the consumer's `Session`). A
+  consumer that implements none of the members reads as before. The closure is taken per receiver bound, does not go
+  through a class initialiser unless it loads code, and does not charge a parameter the caller fills with its own object,
+  so a consumer implementer on a path that cannot run is not charged (executed: spring's own
+  `BridgeMethodResolver` callback; spring-web's `EscapedErrors`, which is not a `BindingResult`, at 11 `BindingResult` callers). Additive. `CANDOR_R1565=0` switches the
+  join off (a measurement arm). The hedge table grows 26.2 MB -> 36.7 MB. R1299's closed-world bound for a project scan
+  is unchanged.
 
 - **⚠ A scope no longer matches inside an overload's parameter list (SOUNDNESS R1548, R1549).** An overloaded method whose
   parameter simple names collide is spelled with fully-qualified parameter types, `bank.Bank.pay(ua.user.User)`, and scope

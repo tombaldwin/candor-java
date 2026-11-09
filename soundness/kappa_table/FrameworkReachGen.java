@@ -21,6 +21,7 @@ import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.InvokeDynamicInsnNode;
+import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 
@@ -290,50 +291,247 @@ public class FrameworkReachGen {
      *  {@code FastByteArrayOutputStream.resize} (an {@code Iterator.next}) reached {@code LimitedDataBufferList.add} and put
      *  {@code DataBuffer.readableByteCount} on its callers (measured). Not this generator's own edges plus R1096's override
      *  union: closed over those the lists grew to 40 MB (p90 2,260 members). */
+    /** One edge of the closure: body {@code t} run by a call in the source body. {@code kind}: 'T' a virtual call on the
+     *  source's own {@code this}, 'S' a {@code super}/private call on it, 'V' a virtual call on another receiver (static
+     *  type {@code owner}), 'X' a static call, 'L' a lambda or method reference the source creates. {@code made} has bit
+     *  p set where the target's parameter p is fed a value the source body MAKES itself (a {@code new}, a lambda, a
+     *  constant, {@code null}): a dispatch on that parameter is on the framework's own object, not the consumer's. */
+    record Edge(int t, char kind, String owner, long made) {}
+    static final Map<Integer, List<Edge>> EDGES = new HashMap<>();
+
     static void closeDispatch(int N) {
-        List<List<Integer>> rev = new ArrayList<>(N);
-        for (int n = 0; n < N; n++) rev.add(new ArrayList<>());
         for (Map.Entry<Integer, List<String>> e : NODE_CALLS.entrySet()) {
             int n = e.getKey();
-            Set<Integer> out = new TreeSet<>();
-            for (String q : e.getValue())
-                for (int t : FN_NODES.getOrDefault(q, List.of())) if (t != n && justified(n, t)) out.add(t);
-            for (int t : out) rev.get(t).add(n);
+            Set<Integer> ts = new TreeSet<>();
+            for (String q : e.getValue()) for (int t : FN_NODES.getOrDefault(q, List.of())) if (t != n) ts.add(t);
+            List<Edge> out = new ArrayList<>();
+            for (int t : ts) out.addAll(edges(n, t));
+            if (!out.isEmpty()) EDGES.put(n, out);
         }
-        ArrayDeque<Integer> wl = new ArrayDeque<>(new TreeSet<>(NODE_DISPATCH.keySet()));
-        boolean[] in = new boolean[N];
-        for (int n : wl) in[n] = true;
-        while (!wl.isEmpty()) {
-            int n = wl.poll(); in[n] = false;
-            Set<String> mine = NODE_DISPATCH.get(n);
-            if (mine == null) continue;
-            for (int p : rev.get(n)) {
-                Set<String> theirs = NODE_DISPATCH.computeIfAbsent(p, z -> new TreeSet<>());
-                if (theirs.addAll(mine) && !in[p]) { wl.add(p); in[p] = true; }
-            }
-        }
+        SITES.clear();
     }
 
-    /** Whether body {@code n} has a call that can run body {@code t}: same name and descriptor, on a non-JDK owner that is
-     *  {@code t}'s class, a supertype of it (a dispatch) or a subtype of it (an inherited body); a lambda body only from the
-     *  body that creates it; a class initialiser always (whatever triggers it). */
-    static boolean justified(int n, int t) {
+    /** The calls in {@code n} that can run {@code t} -- same name and descriptor, on a non-JDK owner that is t's class, a
+     *  supertype of it (a dispatch) or a subtype of it (an inherited body); a lambda or method reference n creates. NOT a
+     *  class initialiser unless it LOADS code (ServiceLoader, Class.forName, reflective instantiation: an SPI the consumer
+     *  supplies, kotlinx's MainDispatcherLoader): otherwise what a {@code <clinit>} dispatches on is the framework's own
+     *  static state, and through it
+     *  jackson's {@code JsonParser.<clinit>} (`JacksonFeatureSet.fromDefaults(StreamReadCapability.values())`) put
+     *  `JacksonFeature.enabledByDefault()` on every parser member (R1565 over-join audit, J1). */
+    static List<Edge> edges(int n, int t) {
         MethodNode tm = nodeMethod.get(t), mn = nodeMethod.get(n);
-        if (tm.name.equals("<clinit>")) return true;
-        if (mn.instructions == null) return false;
+        List<Edge> out = new ArrayList<>();
+        if (mn.instructions == null) return out;
+        if (tm.name.equals("<clinit>")) { if (loadsCode(t)) out.add(new Edge(t, 'X', null, 0)); return out; }
         String to = nodeOwner.get(t);
         int j = nodeJar.get(n);
-        for (AbstractInsnNode in : mn.instructions) {
-            // a lambda body: only the one this body CREATES. The scan also edges every in-jar lambda implementing a SAM the
-            // body calls, a JDK `Supplier`/`Function` included -- the JDK-interface spread `calls` has for classes too.
+        Object[][] si = sites(n);
+        for (int i = 0; i < mn.instructions.size(); i++) {
+            AbstractInsnNode in = mn.instructions.get(i);
             if (in instanceof InvokeDynamicInsnNode x && x.bsmArgs.length > 1 && x.bsmArgs[1] instanceof Handle h
-                    && h.getOwner().equals(to) && h.getName().equals(tm.name) && h.getDesc().equals(tm.desc)) return true;
+                    && h.getOwner().equals(to) && h.getName().equals(tm.name) && h.getDesc().equals(tm.desc)) {
+                out.add(new Edge(t, 'L', null, 0)); continue; }
             if (!(in instanceof MethodInsnNode m) || !m.name.equals(tm.name) || !m.desc.equals(tm.desc)) continue;
-            if (m.owner.equals(to)) return true;
-            if (jdkOwner(m.owner) || runtimeOwner(m.owner)) continue;
-            if (supertypes(j, to).contains(m.owner) || supertypes(j, m.owner).contains(to)) return true;
+            if (!m.owner.equals(to) && (jdkOwner(m.owner) || runtimeOwner(m.owner)
+                    || !(supertypes(j, to).contains(m.owner) || supertypes(j, m.owner).contains(to)))) continue;
+            int op = m.getOpcode();
+            int slot = si[i] == null ? -1 : (Integer) si[i][0];
+            long made = si[i] == null ? 0 : (Long) si[i][1];
+            char kind = op == Opcodes.INVOKESTATIC ? 'X' : op == Opcodes.INVOKESPECIAL ? (slot == 0 ? 'S' : 'X')
+                    : slot == 0 && (mn.access & Opcodes.ACC_STATIC) == 0 ? 'T' : 'V';
+            out.add(new Edge(t, kind, m.owner, made));
         }
+        return out;
+    }
+
+    static boolean loadsCode(int t) {
+        MethodNode mn = nodeMethod.get(t);
+        if (mn.instructions == null) return false;
+        for (AbstractInsnNode in : mn.instructions)
+            if (in instanceof MethodInsnNode m && (m.owner.equals("java/util/ServiceLoader")
+                    || (m.owner.equals("java/lang/Class") && (m.name.equals("forName") || m.name.equals("newInstance")))
+                    || (m.owner.equals("java/lang/reflect/Constructor") && m.name.equals("newInstance"))
+                    || m.owner.equals("java/lang/ClassLoader") && m.name.equals("loadClass"))) return true;
         return false;
+    }
+
+    /** Per call instruction of body n: {receiver entry slot (0 = this) or -1, mask of arguments n makes itself}. */
+    static final Map<Integer, Object[][]> SITES = new HashMap<>();
+    static Object[][] sites(int n) {
+        Object[][] memo = SITES.get(n);
+        if (memo != null) return memo;
+        MethodNode mn = nodeMethod.get(n);
+        Object[][] out = new Object[mn.instructions.size()][];
+        try {
+            org.objectweb.asm.tree.analysis.Frame<org.objectweb.asm.tree.analysis.SourceValue>[] fr =
+                    new org.objectweb.asm.tree.analysis.Analyzer<>(new org.objectweb.asm.tree.analysis.SourceInterpreter())
+                            .analyze(nodeOwner.get(n), mn);
+            for (int i = 0; i < out.length; i++) {
+                if (!(mn.instructions.get(i) instanceof MethodInsnNode m) || fr[i] == null) continue;
+                Type[] args = Type.getArgumentTypes(m.desc);
+                int base = fr[i].getStackSize() - args.length;
+                int slot = -1;
+                if (m.getOpcode() != Opcodes.INVOKESTATIC && base - 1 >= 0) slot = entrySlot(mn, fr, fr[i].getStack(base - 1), 0);
+                long made = 0;
+                for (int a = 0; a < args.length && a < 63; a++) {
+                    org.objectweb.asm.tree.analysis.SourceValue v = fr[i].getStack(base + a);
+                    boolean own = !v.insns.isEmpty();
+                    for (AbstractInsnNode src : v.insns) {
+                        int o = src.getOpcode();
+                        if (!(o == Opcodes.NEW || src instanceof InvokeDynamicInsnNode || o == Opcodes.ACONST_NULL || src instanceof LdcInsnNode)) own = false;
+                    }
+                    if (own) made |= 1L << a;
+                }
+                out[i] = new Object[] { slot, made };
+            }
+        } catch (Exception | LinkageError e) { Arrays.fill(out, null); }
+        SITES.put(n, out);
+        return out;
+    }
+
+    /** Keys of body n dispatched on ONE of its parameters (every explicit site of the key's member on that parameter's
+     *  entry slot): key -> parameter index. Memoised. */
+    static final Map<Integer, Map<String, Integer>> PARAM_KEYS = new HashMap<>();
+    static Map<String, Integer> paramKeys(int n) {
+        Map<String, Integer> memo = PARAM_KEYS.get(n);
+        if (memo != null) return memo;
+        Map<String, Integer> out = new HashMap<>();
+        Set<String> direct = NODE_DISPATCH.getOrDefault(n, Set.of());
+        MethodNode mn = nodeMethod.get(n);
+        if (!direct.isEmpty() && mn.instructions != null) {
+            Object[][] si = sites(n);
+            for (String k : direct) {
+                int paren = k.indexOf('('), dot = k.lastIndexOf('.', paren);
+                String sig = k.substring(dot + 1);
+                int p = -2;
+                for (int i = 0; i < si.length; i++) {
+                    if (!(mn.instructions.get(i) instanceof MethodInsnNode m) || m.getOpcode() == Opcodes.INVOKESTATIC
+                            || !(m.name + m.desc).equals(sig)) continue;
+                    int slot = si[i] == null ? -1 : (Integer) si[i][0];
+                    int pi = slot > 0 ? paramIndex(mn, slot) : -1;
+                    if (pi < 0 || (p != -2 && p != pi)) { p = -1; break; }
+                    p = pi;
+                }
+                if (p >= 0) out.put(k, p);
+            }
+        }
+        PARAM_KEYS.put(n, out);
+        return out;
+    }
+
+    /** SOUNDNESS R1565 over-join audit -- the closure is taken per (body, receiver bound). A call on the body's own {@code
+     *  this} runs only bodies of classes related to what that receiver can be: spring's `Errors.hasErrors()` default calls
+     *  `this.getGlobalErrors()`, and reached for a BindingResult receiver that cannot run `ParameterErrors.getGlobalErrors`
+     *  (not a BindingResult), whose delegate field put `Errors.getGlobalErrors()` on `BindingResult.hasErrors` (S4). The
+     *  bound is the member's class at a root, the call's static owner after a call on another receiver, and is kept along
+     *  calls on {@code this}. And a key on a parameter the CALLER fills with an object it makes itself does not reach that
+     *  caller: `ReflectionUtils.doWithMethods(cls, mc)` called by spring with its own lambda (S3). */
+    static final Map<String, Integer> BOUND_ID = new HashMap<>();
+    static final List<String> BOUNDS = new ArrayList<>(List.of(""));
+    static int bound(String c) { return c == null ? 0 : BOUND_ID.computeIfAbsent(c, z -> { BOUNDS.add(z); return BOUNDS.size() - 1; }); }
+
+    /** Whether some surveyed class is both a {@code b} and a {@code tc}: an interface default's {@code this.m()} runs the body
+     *  a class implementing the interface inherits from an UNRELATED superclass. (A consumer class combining the two is
+     *  not seen here: the residual named in the R1565 lane report.) */
+    static final Map<String, Boolean> MEET = new HashMap<>();
+    static boolean meet(int j, String b, String tc) {
+        String k = b + "|" + tc;
+        Boolean memo = MEET.get(k);
+        if (memo != null) return memo;
+        boolean r = false;
+        if (subs == null) implementersUnvouched(b, "", "()V", ZERO_EFF == null ? (ZERO_EFF = new int[nodeKey.size()]) : ZERO_EFF);
+        ArrayDeque<String> q = new ArrayDeque<>(subs.getOrDefault(tc, List.of()));
+        Set<String> seen = new HashSet<>();
+        while (!q.isEmpty() && !r) {
+            String c = q.poll();
+            if (!seen.add(c)) continue;
+            if (supertypes(j, c).contains(b)) r = true;
+            q.addAll(subs.getOrDefault(c, List.of()));
+        }
+        MEET.put(k, r);
+        return r;
+    }
+
+    static boolean hasThisEdges(int n) {
+        for (Edge e : EDGES.getOrDefault(n, List.of())) if (e.kind() == 'T' || e.kind() == 'S' || e.kind() == 'L') return true;
+        return false;
+    }
+
+    static long state(int n, int b) { return ((long) n << 32) | (hasThisEdges(n) ? b : 0); }
+
+    /** pending member -> (roots, class) */
+    static final List<Object[]> PENDING = new ArrayList<>();
+
+    static void resolvePending() {
+        int j0 = 0;
+        Map<Long, Set<String>> R = new HashMap<>();
+        Map<Long, List<long[]>> rev = new HashMap<>();          // succ state -> [pred state, edge index] (edge kept for blocking)
+        Map<Long, List<Edge>> predEdge = new HashMap<>();
+        ArrayDeque<Long> todo = new ArrayDeque<>();
+        Set<Long> seen = new HashSet<>();
+        for (Object[] p : PENDING) for (int r : (Collection<Integer>) p[1]) { long st = state(r, bound((String) p[2])); if (seen.add(st)) todo.add(st); }
+        // discover the state graph
+        Map<Long, List<Object[]>> succs = new HashMap<>();
+        while (!todo.isEmpty()) {
+            long st = todo.poll();
+            int n = (int) (st >>> 32), b = (int) st;
+            String B = b == 0 ? null : BOUNDS.get(b);
+            int j = nodeJar.get(n);
+            List<Object[]> out = new ArrayList<>();
+            for (Edge e : EDGES.getOrDefault(n, List.of())) {
+                String tc = nodeOwner.get(e.t());
+                int nb;
+                switch (e.kind()) {
+                    case 'T' -> {
+                        if (B != null && !(supertypes(j, tc).contains(B) || supertypes(j, B).contains(tc) || meet(j, B, tc))) continue;
+                        nb = bound(B != null && supertypes(j, B).contains(tc) ? B : tc);
+                    }
+                    case 'S' -> nb = bound(B != null ? B : tc);
+                    case 'L' -> nb = (nodeMethod.get(e.t()).access & Opcodes.ACC_STATIC) != 0 ? 0 : bound(B != null ? B : tc);
+                    case 'V' -> nb = jdkOwner(e.owner()) ? 0 : bound(e.owner());
+                    default -> nb = 0;
+                }
+                long ts = state(e.t(), nb);
+                out.add(new Object[] { ts, e });
+                if (seen.add(ts)) todo.add(ts);
+            }
+            succs.put(st, out);
+        }
+        // R(state) = direct keys not on a parameter, plus over each edge R(succ) and the succ's parameter keys not blocked there
+        for (long st : seen) {
+            int n = (int) (st >>> 32);
+            Set<String> d = new TreeSet<>(NODE_DISPATCH.getOrDefault(n, Set.of()));
+            d.removeAll(paramKeys(n).keySet());
+            R.put(st, d);
+        }
+        Map<Long, List<Object[]>> preds = new HashMap<>();
+        for (Map.Entry<Long, List<Object[]>> e : succs.entrySet())
+            for (Object[] o : e.getValue()) preds.computeIfAbsent((Long) o[0], z -> new ArrayList<>()).add(new Object[] { e.getKey(), o[1] });
+        ArrayDeque<Long> wl = new ArrayDeque<>(new TreeSet<>(seen));
+        Set<Long> inq = new HashSet<>(seen);
+        while (!wl.isEmpty()) {
+            long st = wl.poll(); inq.remove(st);
+            int n = (int) (st >>> 32);
+            Set<String> mine = new TreeSet<>(R.get(st));
+            Map<String, Integer> pk = paramKeys(n);
+            for (Object[] pe : preds.getOrDefault(st, List.of())) {
+                long ps = (Long) pe[0];
+                Edge e = (Edge) pe[1];
+                Set<String> add = new TreeSet<>(mine);
+                for (Map.Entry<String, Integer> k : pk.entrySet())
+                    if (k.getValue() >= 63 || (e.made() & (1L << k.getValue())) == 0) add.add(k.getKey());
+                if (R.get(ps).addAll(add) && inq.add(ps)) wl.add(ps);
+            }
+        }
+        for (Object[] p : PENDING) {
+            TreeSet<String> u = DISPATCH.computeIfAbsent((String) p[0], z -> new TreeSet<>());
+            for (int r : (Collection<Integer>) p[1]) {
+                long st = state(r, bound((String) p[2]));
+                u.addAll(R.get(st));
+                u.addAll(paramKeys(r).keySet());
+            }
+        }
+        System.err.println("framework-reach: dispatch closure over " + seen.size() + " (body, receiver bound) states (R1565)");
     }
 
     static final Map<String, Set<String>> SUPERTYPES = new HashMap<>();
@@ -361,16 +559,24 @@ public class FrameworkReachGen {
      *  ({@link #receiverCalls}, slot 0) with the key's name and descriptor, on a type {@code n}'s class is. Those are
      *  R1511's T lines, which resolve them from the receiver's class; joined here instead, every consumer subclass's
      *  override would land on every call of every member (measured: jna's {@code Structure.write()} put each
-     *  jna-platform structure's override on 13,250 call sites). */
+     *  jna-platform structure's override on 13,250 call sites). Only where EVERY call of that signature in the body is on
+     *  {@code this}: one more call on another receiver keeps the key, and a {@code super.m()} counts as neither. */
     static boolean onThis(int n, String key) {
         int paren = key.indexOf('('), dot = key.lastIndexOf('.', paren);
         String owner = key.substring(0, dot), sig = key.substring(dot + 1);
-        boolean hit = false;
+        int onThis = 0, sites = 0;
         for (Object[] rc : receiverCalls(n)) {
             MethodInsnNode m = (MethodInsnNode) rc[0];
-            if ((Integer) rc[1] == 0 && (m.name + m.desc).equals(sig)) { hit = true; break; }
+            // a `super.m()` (INVOKESPECIAL) is not a dispatch, so it produced no key and cannot stand for one
+            if ((Integer) rc[1] == 0 && m.getOpcode() != Opcodes.INVOKESPECIAL && (m.name + m.desc).equals(sig)) onThis++;
         }
-        if (!hit) return false;
+        if (onThis == 0) return false;
+        // ...and only where EVERY such call is on `this`: a decorator's `this.m(); inner.m();` also dispatches on the
+        // field it wraps, which no T line covers (R1565 review, shape (b))
+        for (AbstractInsnNode in : nodeMethod.get(n).instructions)
+            if (in instanceof MethodInsnNode m && m.getOpcode() != Opcodes.INVOKESTATIC && m.getOpcode() != Opcodes.INVOKESPECIAL
+                    && (m.name + m.desc).equals(sig)) sites++;
+        if (sites > onThis) return false;
         ArrayDeque<String> q = new ArrayDeque<>(List.of(nodeOwner.get(n)));
         Set<String> seen = new HashSet<>();
         int j = nodeJar.get(n);
@@ -409,12 +615,9 @@ public class FrameworkReachGen {
         return any;
     }
 
-    static void recordDispatch(String member, Collection<Integer> roots) {
-        TreeSet<String> u = DISPATCH.computeIfAbsent(member, k -> new TreeSet<>());
-        for (int r : roots) {
-            Set<String> d = NODE_DISPATCH.get(r);
-            if (d != null) u.addAll(d);
-        }
+    static void recordDispatch(String member, Collection<Integer> roots, String cls) {
+        DISPATCH.computeIfAbsent(member, k -> new TreeSet<>());
+        PENDING.add(new Object[] { member, new ArrayList<>(roots), cls });
     }
 
     /** Whether a consumer can supply an implementer of {@code owner.name+desc}: a surveyed framework type (not the JDK,
@@ -447,6 +650,7 @@ public class FrameworkReachGen {
      *  (FrameworkReach#dispatchMembers) -- the T lines' compression ({@link #templateLines} (1)), exact by the same
      *  argument: an override with a different list, an EMPTY one included, always gets its own line. */
     static List<String> dispatchLines() {
+        resolvePending();
         Map<String, Set<String>> walk = new HashMap<>();
         TreeMap<String, Set<String>> emit = new TreeMap<>();
         for (String k : DISPATCH.keySet()) {
@@ -964,11 +1168,12 @@ public class FrameworkReachGen {
                     if (framework && !name.equals("<clinit>")) {
                         if (tg.isEmpty()) { if (!name.equals("<init>") && implementersUnvouched(cn.name, name, desc, eff))
                             HEDGE.putIfAbsent(cn.name + "." + sig, "A");
-                            // the implementers in the DECLARING jar only: one in another surveyed jar may not be on the
-                            // consumer's class path (R1097's reason; measured, servlet `FilterChain.doFilter` pulled the web
-                            // stack's whole closure in through the containers' chains)
-                            if (!name.equals("<init>")) { final int jj = j; recordDispatch(cn.name + "." + sig,
-                                    implementerBodies(cn.name, name, desc).stream().filter(t -> nodeJar.get(t) == jj).toList()); } }
+                            // every surveyed implementer, in ANY jar. Restricting this to the declaring jar (R1097's reason:
+                            // the other jar may not be on the consumer's class path) reintroduced R1565 across a jar boundary:
+                            // an other-jar implementer that dispatches on a consumer receiver reads pure in its own scan, so it
+                            // vouches the member (no A line) and the key was the only disclosure (R1565 review, shape (c)).
+                            // Where that jar is absent the cost is an over-charge, never a silence.
+                            if (!name.equals("<init>")) recordDispatch(cn.name + "." + sig, implementerBodies(cn.name, name, desc), cn.name); }
                         else if (UNK_ONLY.containsAll(tg)) HEDGE.putIfAbsent(cn.name + "." + sig, "U");
                         else if (tg.stream().allMatch(FrameworkReachGen::unkAny) && (FLOOR.contains(cn.name + "." + sig)
                                 || tg.stream().allMatch(t -> eff[t] == 0))) FLOORED.add(cn.name + "." + sig);
@@ -998,7 +1203,7 @@ public class FrameworkReachGen {
                             if ((extra & ~(declared | declaredLost)) != 0) BROAD.add(key);
                         }
                     }
-                    if (framework) recordDispatch(key, rs);                                // SOUNDNESS R1565/R1569
+                    if (framework) recordDispatch(key, rs, cn.name);                                // SOUNDNESS R1565/R1569
                     int mask = 0, lost = 0;
                     String rep = null;
                     for (int r : rs) {

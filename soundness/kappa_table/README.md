@@ -170,26 +170,41 @@ The scan already names every such dispatch on its row (`dispatchesOn`, SPEC §4 
 joins its own implementers of it. The `D` lines give the unchained arm the same key: per consumer-callable member, the
 union over the bodies the call can run of each body's `dispatchesOn`, closed over the report's own `calls` (the closure
 `Candor#depTransitiveDispatch` takes), kept where a consumer can implement the member (`FrameworkReachGen#openKey`: a
-public, non-final surveyed type with an accessible constructor or an interface, the member overridable). Four narrowings,
-each measured on the corpus A/B before it was made:
+public, non-final surveyed type with an accessible constructor or an interface, the member overridable). An abstract
+member's keys come from its implementers in EVERY surveyed jar: limiting them to the declaring jar reintroduced the silence
+across a jar boundary (spring-session's `HttpSessionAdapter.getAttribute` runs the consumer's `Session`, and servlet's
+`HttpSession.getAttribute` has no `A` line because that implementer reads pure in its own scan; executed, `deny Fs` 0).
+The precision of the closure, each rule measured before it was made and checked by the over-join audit:
 
-* a dispatch on the body's own `this` is not a key (`#onThis`): that is R1511's `T` line, which resolves it from the
-  receiver's class; as a key, jna's `Structure.write()` put every jna-platform structure's override on every call;
-* a `calls` edge counts only where the caller's bytecode has a call on a non-JDK owner related to the callee's class
-  (`#justified`): the scan also edges every in-jar implementer of a JDK interface (`Iterator.next`), and through one of
-  them spring-core's `FastByteArrayOutputStream.resize` "reached" `DataBuffer.readableByteCount`;
-* an abstract member's keys come from its implementers in the DECLARING jar only: servlet's `FilterChain.doFilter` pulled
-  in the web stack through the containers' chains, which a consumer may not have (R1097's reason);
-* a key whose every call site in the body is on a final class or an enum is not one (`#onlyClosedSites`): the key is
-  spelled with the declaring abstraction (`JacksonFeature.enabledByDefault()`) while the value is the jar's own constant.
+* a dispatch on the body's own `this` is not a key when EVERY call of that member in the body is on `this` (`#onThis`;
+  a `super.m()` counts as neither): that is R1511's `T` line. A decorator's `inner.m()` keeps it (dbunit's
+  `ConditionalSetBiValueComparer.toString`, executed: 2 reads, silent before);
+* a `calls` edge counts only where the caller's bytecode has a call on a non-JDK owner related to the callee's class,
+  or creates the lambda or method reference (`#edges`): the scan also edges every in-jar implementer of a JDK interface;
+* NOT a class initialiser, unless it loads code (ServiceLoader, `Class.forName`, reflective instantiation): jackson's
+  `JsonParser.<clinit>` iterates its own `StreamReadCapability` constants, and as an edge put
+  `JacksonFeature.enabledByDefault()` on every parser member;
+* the closure is taken per (body, receiver bound) (`#resolvePending`): a call on `this` reaches only bodies of classes
+  related to what that receiver can be (the member's class at a root, a call's static owner after it). `Errors.hasErrors()`
+  reached for a `BindingResult` cannot run `ParameterErrors.getGlobalErrors`, whose delegate put `Errors.getGlobalErrors()`
+  on `BindingResult.hasErrors` and charged spring-web's `EscapedErrors` (not a `BindingResult`) at 11 callers;
+* a key on a PARAMETER does not reach a caller that fills that parameter with an object it makes itself (a `new`, a
+  lambda, a constant): `BridgeMethodResolver.findBridgedMethod` hands `ReflectionUtils.doWithMethods` its own callback
+  (executed: 0 reads; it was charged a consumer lambda's `Fs`);
+* a key whose every call site in the body is on a final class or an enum is not one (`#onlyClosedSites`).
 
-Closing over this generator's own edges plus R1096's override union instead was measured too: the lists grew to 40 MB
-(p90 2,260 members). `E` lines are
+Closing over this generator's own edges plus R1096's override union was measured too: the lists grew to 40 MB.
+Residual: a CONSUMER class that extends a framework class and implements a framework interface the class does not, whose
+inherited body an interface default reaches on `this` -- the receiver bound sees only surveyed classes combining the two.
+`E` lines are
 the distinct lists (by `K` number), `K` lines the dispatched members; a `D` line is written only where it differs from
 what the walk up the `H` lines reads, as for `T`. `Cha#frameworkDispatchJoin` edges the consumer's implementers of each
 member (its CHA, its lambdas, and the classes that reach the owner only through a framework class), past the CHA bound
 discloses `Unknown[dispatch]`, and adds nothing where the consumer implements none -- the framework's own implementers are
 already in the row, exactly as in the chained join. A resolution, additive; `CANDOR_R1565=0` switches the join off.
+A project receiver that inherits a framework body is looked up under its nearest framework superclass AND every framework
+interface it implements: `class C implements AutowireCandidateResolver {}` runs the interface's default
+`isAutowireCandidate(holder, descriptor)`, which calls the consumer's `BeanDefinition` (executed: 1 read, silent before).
 
 Its precision is the chained join's: the key says the body dispatches on that abstraction, not that the receiver is the
 consumer's. `Days.hashCode` hashes a joda singleton field type, and a consumer with a file-reading `DurationFieldType`

@@ -3,9 +3,9 @@ package io.poly.candor;
 import io.poly.candor.model.EffectSet;
 
 import static io.poly.candor.TestCompiler.rm;
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -50,7 +50,7 @@ class FrameworkDispatchJoinR1565Test {
         MethodVisitor m = cw.visitMethod(Opcodes.ACC_PUBLIC, member, desc, null, null);
         m.visitCode();
         if (effect) fileLength(m); else m.visitInsn(Opcodes.ICONST_1);
-        if (desc.endsWith(")I")) m.visitInsn(Opcodes.IRETURN);
+        if (desc.endsWith(")I") || desc.endsWith(")Z")) m.visitInsn(Opcodes.IRETURN);
         else { m.visitInsn(Opcodes.POP); m.visitInsn(Opcodes.ACONST_NULL); m.visitInsn(Opcodes.ARETURN); }
         m.visitMaxs(3, 3); m.visitEnd();
         cw.visitEnd();
@@ -127,9 +127,12 @@ class FrameworkDispatchJoinR1565Test {
 
     @Test
     void aConsumerImplementerTheFrameworkBodyDispatchesOnIsCharged() throws Exception {
+        // the expectation is the BEHAVIOUR, not the switch: under CANDOR_R1565=0 (a measurement arm) the test is skipped,
+        // never turned into an assertion that the call is silent
+        assumeTrue(Cha.R1565, "CANDOR_R1565=0: the join is switched off");
         Map<String, EffectSet> r = scan(true);
         for (String fn : new String[] { "viaPrecise", "viaWrapper", "viaWrapperEq", "viaToDocument" })
-            assertEquals(Cha.R1565, has(r, "r1565.C." + fn, "FS"), fn + ": the framework body runs the consumer's implementer");
+            assertTrue(has(r, "r1565.C." + fn, "FS"), fn + ": the framework body runs the consumer's implementer");
     }
 
     @Test
@@ -138,6 +141,43 @@ class FrameworkDispatchJoinR1565Test {
         for (String fn : new String[] { "viaPrecise", "viaWrapper", "viaWrapperEq", "viaToDocument" }) {
             assertFalse(has(r, "r1565.C." + fn, "FS"), "CONTROL " + fn + ": the implementer performs nothing");
             assertFalse(has(r, "r1565.C." + fn, "UNKNOWN"), "CONTROL " + fn + ": a resolution, not a hedge");
+        }
+    }
+
+    static final String ACR = "org/springframework/beans/factory/support/AutowireCandidateResolver";
+    static final String BDH = "org/springframework/beans/factory/config/BeanDefinitionHolder";
+    static final String DD = "org/springframework/beans/factory/config/DependencyDescriptor";
+
+    /** R1565 review, shape (a): a project class that IMPLEMENTS a framework interface and inherits its default body.
+     *  `AutowireCandidateResolver.isAutowireCandidate(holder, descriptor)` runs `holder.getBeanDefinition().isAutowireCandidate()`
+     *  (EXECUTED: one read through a file-reading `GenericBeanDefinition` subclass). The lookup used to walk superclasses only. */
+    @Test
+    void anInheritedInterfaceDefaultIsLookedUpToo() throws Exception {
+        assumeTrue(Cha.R1565, "CANDOR_R1565=0: the join is switched off");
+        Path dir = Files.createTempDirectory("r1565a");
+        Config saved = Candor.config;
+        try {
+            Path cls = dir.resolve("cls");
+            ClassWriter cw = new ClassWriter(0);
+            cw.visit(Opcodes.V17, Opcodes.ACC_PUBLIC, "r1565/R", null, "java/lang/Object", new String[] { ACR });
+            cw.visitEnd();
+            write(cls, "r1565/R", cw.toByteArray());
+            write(cls, "r1565/B", impl("r1565/B", "org/springframework/beans/factory/support/GenericBeanDefinition", false,
+                    "isAutowireCandidate", "()Z", true));
+            cw = new ClassWriter(0);
+            cw.visit(Opcodes.V17, Opcodes.ACC_PUBLIC, "r1565/U", null, "java/lang/Object", null);
+            MethodVisitor m = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "viaDefault", "(Lr1565/R;L" + BDH + ";)Z", null, null);
+            m.visitCode(); m.visitVarInsn(Opcodes.ALOAD, 0); m.visitVarInsn(Opcodes.ALOAD, 1); m.visitInsn(Opcodes.ACONST_NULL);
+            m.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "r1565/R", "isAutowireCandidate", "(L" + BDH + ";L" + DD + ";)Z", false);
+            m.visitInsn(Opcodes.IRETURN); m.visitMaxs(3, 2); m.visitEnd();
+            cw.visitEnd();
+            write(cls, "r1565/U", cw.toByteArray());
+            Candor.config = Config.empty();
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(has(r, "r1565.U.viaDefault", "FS"), "the interface default runs the consumer's BeanDefinition");
+        } finally {
+            Candor.config = saved;
+            rm(dir);
         }
     }
 }

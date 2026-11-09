@@ -1482,13 +1482,23 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         if (min.owner.isEmpty() || min.owner.charAt(0) == '[' || min.name.equals("<clinit>")) return;
         if (FrameworkReach.jdkOwned(min.owner) || languageRuntimeOwned(min.owner)) return;
         String f = min.owner;
+        List<String> keys;
         if (c.byName.containsKey(f)) {
             if (min.getOpcode() == Opcodes.INVOKESTATIC || min.name.equals("<init>")) return;
             if (projectBodyOf(c, f, min.name, min.desc) != null) return;
-            f = firstFrameworkSuper(c, f);
-            if (f == null) return;
-        }
-        List<String> keys = FrameworkReach.dispatchMembers(f, min.name, min.desc);
+            // the body a project receiver inherits: its nearest framework SUPERCLASS's, or a framework INTERFACE's default
+            // (R1565 review, shape (a): `class C implements FluentConfigurationBuilder {}` runs the interface's default
+            // `withService(Builder)`, which calls the consumer's `b.build()`). Unioned: which one wins is decided by
+            // bodies this scan cannot see, and each list only adds.
+            LinkedHashSet<String> u = new LinkedHashSet<>();
+            String sup = firstFrameworkSuper(c, f);
+            if (sup != null) u.addAll(FrameworkReach.dispatchMembers(sup, min.name, min.desc));
+            for (String t : resolutionOrder(f, false))
+                if (!c.byName.containsKey(t) && !FrameworkReach.jdkOwned(t) && !languageRuntimeOwned(t)) {
+                    u.addAll(FrameworkReach.dispatchMembers(t, min.name, min.desc));
+                }
+            keys = new ArrayList<>(u);
+        } else keys = FrameworkReach.dispatchMembers(f, min.name, min.desc);
         if (keys.isEmpty()) return;
         Set<String> bodies = new LinkedHashSet<>();
         boolean broad = false;

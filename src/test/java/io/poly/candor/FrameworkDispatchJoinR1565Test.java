@@ -118,6 +118,12 @@ class FrameworkDispatchJoinR1565Test {
                 "toDocument(ctx) wraps ctx and calls getReference on it (R1569)");
         assertTrue(FrameworkReach.dispatchMembers("org/joda/time/Period", "hashCode", "()I").contains(DFT + ".hashCode()I"),
                 "an inherited member (Period.hashCode is AbstractPeriod's) is found up the H lines");
+        assertTrue(FrameworkReach.dispatchMembers("kotlinx/coroutines/Dispatchers", "getMain", "()Lkotlinx/coroutines/MainCoroutineDispatcher;")
+                .contains("kotlinx/coroutines/internal/MainDispatcherFactory.createDispatcher(Ljava/util/List;)Lkotlinx/coroutines/MainCoroutineDispatcher;"),
+                "a class initialiser is followed: MainDispatcherLoader.<clinit> loads the consumer's factory through ServiceLoader");
+        assertFalse(FrameworkReach.dispatchMembers("com/fasterxml/jackson/core/base/GeneratorBase", "close", "()V").stream()
+                .anyMatch(k -> k.startsWith("com/fasterxml/jackson/core/util/JacksonFeature.")),
+                "CONTROL: JsonGenerator.<clinit> hands fromDefaults its own enum's values()");
         assertTrue(FrameworkReach.dispatchMembers(PDF, "getUnitMillis", "()J").isEmpty(),
                 "CONTROL: a field accessor dispatches on nothing");
         assertFalse(FrameworkReach.dispatchMembers("org/joda/time/base/AbstractPeriod", "hashCode", "()I")

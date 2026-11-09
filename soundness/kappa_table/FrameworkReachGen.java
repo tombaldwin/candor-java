@@ -312,17 +312,16 @@ public class FrameworkReachGen {
     }
 
     /** The calls in {@code n} that can run {@code t} -- same name and descriptor, on a non-JDK owner that is t's class, a
-     *  supertype of it (a dispatch) or a subtype of it (an inherited body); a lambda or method reference n creates. NOT a
-     *  class initialiser unless it LOADS code (ServiceLoader, Class.forName, reflective instantiation: an SPI the consumer
-     *  supplies, kotlinx's MainDispatcherLoader): otherwise what a {@code <clinit>} dispatches on is the framework's own
-     *  static state, and through it
-     *  jackson's {@code JsonParser.<clinit>} (`JacksonFeatureSet.fromDefaults(StreamReadCapability.values())`) put
-     *  `JacksonFeature.enabledByDefault()` on every parser member (R1565 over-join audit, J1). */
+     *  supertype of it (a dispatch) or a subtype of it (an inherited body); a lambda or method reference n creates; and a
+     *  class initialiser, always: what one dispatches on can be a consumer object (kotlinx's MainDispatcherLoader loads
+     *  the consumer's MainDispatcherFactory through ServiceLoader one call down; a static hook the consumer set earlier).
+     *  An initialiser that hands a helper the framework's OWN constants (jackson's `JacksonFeatureSet.fromDefaults(
+     *  StreamReadCapability.values())`) is cut where it should be, by the parameter rule below (R1565 review 2). */
     static List<Edge> edges(int n, int t) {
         MethodNode tm = nodeMethod.get(t), mn = nodeMethod.get(n);
         List<Edge> out = new ArrayList<>();
         if (mn.instructions == null) return out;
-        if (tm.name.equals("<clinit>")) { if (loadsCode(t)) out.add(new Edge(t, 'X', null, 0)); return out; }
+        if (tm.name.equals("<clinit>")) { out.add(new Edge(t, 'X', null, 0)); return out; }
         String to = nodeOwner.get(t);
         int j = nodeJar.get(n);
         Object[][] si = sites(n);
@@ -344,17 +343,6 @@ public class FrameworkReachGen {
         return out;
     }
 
-    static boolean loadsCode(int t) {
-        MethodNode mn = nodeMethod.get(t);
-        if (mn.instructions == null) return false;
-        for (AbstractInsnNode in : mn.instructions)
-            if (in instanceof MethodInsnNode m && (m.owner.equals("java/util/ServiceLoader")
-                    || (m.owner.equals("java/lang/Class") && (m.name.equals("forName") || m.name.equals("newInstance")))
-                    || (m.owner.equals("java/lang/reflect/Constructor") && m.name.equals("newInstance"))
-                    || m.owner.equals("java/lang/ClassLoader") && m.name.equals("loadClass"))) return true;
-        return false;
-    }
-
     /** Per call instruction of body n: {receiver entry slot (0 = this) or -1, mask of arguments n makes itself}. */
     static final Map<Integer, Object[][]> SITES = new HashMap<>();
     static Object[][] sites(int n) {
@@ -370,23 +358,60 @@ public class FrameworkReachGen {
                 if (!(mn.instructions.get(i) instanceof MethodInsnNode m) || fr[i] == null) continue;
                 Type[] args = Type.getArgumentTypes(m.desc);
                 int base = fr[i].getStackSize() - args.length;
-                int slot = -1;
-                if (m.getOpcode() != Opcodes.INVOKESTATIC && base - 1 >= 0) slot = entrySlot(mn, fr, fr[i].getStack(base - 1), 0);
+                int slot = -1, elem = -1;
+                if (m.getOpcode() != Opcodes.INVOKESTATIC && base - 1 >= 0) {
+                    slot = entrySlot(mn, fr, fr[i].getStack(base - 1), 0);
+                    if (slot < 0) elem = elementSlot(mn, fr, fr[i].getStack(base - 1), 0);
+                }
                 long made = 0;
                 for (int a = 0; a < args.length && a < 63; a++) {
                     org.objectweb.asm.tree.analysis.SourceValue v = fr[i].getStack(base + a);
                     boolean own = !v.insns.isEmpty();
-                    for (AbstractInsnNode src : v.insns) {
-                        int o = src.getOpcode();
-                        if (!(o == Opcodes.NEW || src instanceof InvokeDynamicInsnNode || o == Opcodes.ACONST_NULL || src instanceof LdcInsnNode)) own = false;
-                    }
+                    for (AbstractInsnNode src : v.insns) if (!frameworkMade(nodeJar.get(n), src)) own = false;
                     if (own) made |= 1L << a;
                 }
-                out[i] = new Object[] { slot, made };
+                out[i] = new Object[] { slot, made, elem };
             }
         } catch (Exception | LinkageError e) { Arrays.fill(out, null); }
         SITES.put(n, out);
         return out;
+    }
+
+    /** A value the body makes itself: {@code new}, a lambda, {@code null}, a constant, an enum's own {@code values()} or one
+     *  of its constants (a framework enum's instances are the framework's; jackson's `<clinit>`s hand
+     *  `StreamReadCapability.values()` to `JacksonFeatureSet.fromDefaults`). */
+    static boolean frameworkMade(int j, AbstractInsnNode src) {
+        int o = src.getOpcode();
+        if (o == Opcodes.NEW || src instanceof InvokeDynamicInsnNode || o == Opcodes.ACONST_NULL || src instanceof LdcInsnNode) return true;
+        String owner = src instanceof MethodInsnNode m && o == Opcodes.INVOKESTATIC && m.name.equals("values")
+                && m.desc.equals("()[L" + m.owner + ";") ? m.owner
+                : src instanceof org.objectweb.asm.tree.FieldInsnNode f && o == Opcodes.GETSTATIC && f.desc.equals("L" + f.owner + ";") ? f.owner : null;
+        if (owner == null) return false;
+        ClassNode cn = cls(jarOf(j, owner), owner);
+        return cn != null && (cn.access & Opcodes.ACC_ENUM) != 0;
+    }
+
+    /** The parameter slot whose ARRAY a receiver is an element of (through locals and casts), or -1: a key dispatched on
+     *  `features[i]` is a key on parameter `features`. */
+    static int elementSlot(MethodNode mn, org.objectweb.asm.tree.analysis.Frame<org.objectweb.asm.tree.analysis.SourceValue>[] fr,
+            org.objectweb.asm.tree.analysis.SourceValue v, int depth) {
+        if (depth > 8 || v.insns.isEmpty()) return -1;
+        int slot = -2;
+        for (AbstractInsnNode s : v.insns) {
+            int idx = mn.instructions.indexOf(s), r;
+            if (fr[idx] == null) return -1;
+            if (s instanceof org.objectweb.asm.tree.VarInsnNode x && x.getOpcode() == Opcodes.ALOAD) {
+                org.objectweb.asm.tree.analysis.SourceValue l = fr[idx].getLocal(x.var);
+                r = l.insns.isEmpty() ? -1 : elementSlot(mn, fr, l, depth + 1);
+            } else if ((s instanceof org.objectweb.asm.tree.VarInsnNode x && x.getOpcode() == Opcodes.ASTORE) || s.getOpcode() == Opcodes.CHECKCAST) {
+                r = elementSlot(mn, fr, fr[idx].getStack(fr[idx].getStackSize() - 1), depth + 1);
+            } else if (s.getOpcode() == Opcodes.AALOAD) {
+                r = entrySlot(mn, fr, fr[idx].getStack(fr[idx].getStackSize() - 2), 0);
+            } else return -1;
+            if (r < 0 || (slot != -2 && slot != r)) return -1;
+            slot = r;
+        }
+        return slot;
     }
 
     /** Keys of body n dispatched on ONE of its parameters (every explicit site of the key's member on that parameter's
@@ -408,7 +433,9 @@ public class FrameworkReachGen {
                     if (!(mn.instructions.get(i) instanceof MethodInsnNode m) || m.getOpcode() == Opcodes.INVOKESTATIC
                             || !(m.name + m.desc).equals(sig)) continue;
                     int slot = si[i] == null ? -1 : (Integer) si[i][0];
-                    int pi = slot > 0 ? paramIndex(mn, slot) : -1;
+                    if (slot < 0 && si[i] != null) slot = (Integer) si[i][2];      // an element of a parameter array
+                    boolean st = (mn.access & Opcodes.ACC_STATIC) != 0;
+                    int pi = slot > 0 || (st && slot == 0) ? argIndex(mn, slot) : -1;   // never `this`
                     if (pi < 0 || (p != -2 && p != pi)) { p = -1; break; }
                     p = pi;
                 }
@@ -839,6 +866,16 @@ public class FrameworkReachGen {
             }
         }
         return out;
+    }
+
+    /** {@link #paramIndex} for any reference parameter, an array included. */
+    static int argIndex(MethodNode mn, int slot) {
+        int at = (mn.access & Opcodes.ACC_STATIC) != 0 ? 0 : 1, i = 0;
+        for (Type t : Type.getArgumentTypes(mn.desc)) {
+            if (at == slot) return t.getSort() == Type.OBJECT || t.getSort() == Type.ARRAY ? i : -1;
+            at += t.getSize(); i++;
+        }
+        return -1;
     }
 
     /** The parameter index (0-based, receiver excluded) whose value starts in local {@code slot}, or -1. */

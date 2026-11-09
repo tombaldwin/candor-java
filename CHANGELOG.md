@@ -25,8 +25,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   shapes that were silent on 0.40.18 and main too (executed): an interface default (`AutowireCandidateResolver`), a
   decorator that calls `super.m()` and its delegate's `m()` (dbunit's `ConditionalSetBiValueComparer.toString`), and an
   implementer in ANOTHER surveyed jar (spring-session's `HttpSession` adapter running the consumer's `Session`). A
-  consumer that implements none of the members reads as before. The closure is taken per receiver bound, does not go
-  through a class initialiser unless it loads code, and does not charge a parameter the caller fills with its own object,
+  consumer that implements none of the members reads as before. The closure is taken per receiver bound and does not
+  charge a parameter (or an element of one) the caller fills with its own object (`new`, a lambda, a constant, an enum),
   so a consumer implementer on a path that cannot run is not charged (executed: spring's own
   `BridgeMethodResolver` callback; spring-web's `EscapedErrors`, which is not a `BindingResult`, at 11 `BindingResult` callers). Additive. `CANDOR_R1565=0` switches the
   join off (a measurement arm). The hedge table grows 26.2 MB -> 36.7 MB. R1299's closed-world bound for a project scan

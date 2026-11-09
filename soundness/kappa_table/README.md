@@ -181,16 +181,18 @@ The precision of the closure, each rule measured before it was made and checked 
   `ConditionalSetBiValueComparer.toString`, executed: 2 reads, silent before);
 * a `calls` edge counts only where the caller's bytecode has a call on a non-JDK owner related to the callee's class,
   or creates the lambda or method reference (`#edges`): the scan also edges every in-jar implementer of a JDK interface;
-* NOT a class initialiser, unless it loads code (ServiceLoader, `Class.forName`, reflective instantiation): jackson's
-  `JsonParser.<clinit>` iterates its own `StreamReadCapability` constants, and as an edge put
-  `JacksonFeature.enabledByDefault()` on every parser member;
+* a class initialiser IS followed: what one dispatches on can be the consumer's (kotlinx's `MainDispatcherLoader.<clinit>`
+  loads the consumer's `MainDispatcherFactory` through `ServiceLoader` one call down; executed, it was charged on c819779
+  and silent when initialisers were cut);
 * the closure is taken per (body, receiver bound) (`#resolvePending`): a call on `this` reaches only bodies of classes
   related to what that receiver can be (the member's class at a root, a call's static owner after it). `Errors.hasErrors()`
   reached for a `BindingResult` cannot run `ParameterErrors.getGlobalErrors`, whose delegate put `Errors.getGlobalErrors()`
   on `BindingResult.hasErrors` and charged spring-web's `EscapedErrors` (not a `BindingResult`) at 11 callers;
-* a key on a PARAMETER does not reach a caller that fills that parameter with an object it makes itself (a `new`, a
-  lambda, a constant): `BridgeMethodResolver.findBridgedMethod` hands `ReflectionUtils.doWithMethods` its own callback
-  (executed: 0 reads; it was charged a consumer lambda's `Fs`);
+* a key on a PARAMETER (or on an element of a parameter array) does not reach a caller that fills that parameter with an
+  object it makes itself (a `new`, a lambda, a constant, an enum's own `values()` or constant):
+  `BridgeMethodResolver.findBridgedMethod` hands `ReflectionUtils.doWithMethods` its own callback (executed: 0 reads; it
+  was charged a consumer lambda's `Fs`), and jackson's `JsonParser.<clinit>` hands `JacksonFeatureSet.fromDefaults` its
+  own `StreamReadCapability.values()` (it put `JacksonFeature.enabledByDefault()` on every parser member);
 * a key whose every call site in the body is on a final class or an enum is not one (`#onlyClosedSites`).
 
 Closing over this generator's own edges plus R1096's override union was measured too: the lists grew to 40 MB.

@@ -256,12 +256,19 @@ tasks.withType<JavaCompile>().configureEach {
 
 // Provenance (candor-spec §2.1): bake the engine build id (git short hash) + toolchain into a resource
 // so the report's `candor` header reflects the BINARY that ran, not the source tree it was built from.
+// A failing command must never become a value: stdout only (stderr is NOT merged, git's "fatal: ..."
+// text used to become the version), a zero exit status is required, and the command runs in the project
+// root rather than in whatever directory a shared Gradle daemon was started from.
 fun sh(vararg a: String): String = try {
-    ProcessBuilder(*a).redirectErrorStream(true).start()
-        .inputStream.bufferedReader().readText().trim()
+    val p = ProcessBuilder(*a).directory(rootDir).redirectError(ProcessBuilder.Redirect.DISCARD).start()
+    val out = p.inputStream.bufferedReader().readText().trim()
+    if (p.waitFor() == 0) out else ""
 } catch (e: Exception) { "" }
 
-val candorVersion: String = sh("git", "rev-parse", "--short", "HEAD").ifEmpty { "unknown" }
+// The build id is a short hex sha or "unknown"; anything else (a daemon with a stale cwd, a wrapper that
+// prints noise) falls back rather than being baked into the jar.
+val candorVersion: String = sh("git", "rev-parse", "--short", "HEAD")
+    .takeIf { Regex("[0-9a-f]{4,40}").matches(it) } ?: "unknown"
 val candorToolchain: String =
     "jdk-" + (java.toolchain.languageVersion.orNull?.asInt() ?: Runtime.version().feature())
 // The clean release semver (the crate-semver axis, == this Gradle project `version`). Distinct from

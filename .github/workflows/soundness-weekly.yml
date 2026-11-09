@@ -17,6 +17,9 @@ jobs:
   kappa-libs-and-mutation:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: read
+      issues: write   # the failure-notice step below
     steps:
       - uses: actions/checkout@v6
 
@@ -74,3 +77,17 @@ jobs:
       # to go red. Exit 1 = a MISSED mutation (a blind spot in our own gates) — fail the workflow.
       - name: Mutation probe (do our gates still have teeth?)
         run: bash soundness/mutation_probe.sh
+
+      # This workflow failed two Mondays running (2026-10-26, 2026-11-02) and nobody looked: a red scheduled run
+      # notifies no one. A failed SCHEDULED run opens (or comments on) one issue, so it is seen. Manual
+      # dispatches are left alone -- whoever dispatched one is watching it.
+      - name: Open an issue when the scheduled run failed
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="soundness-weekly is failing"
+          body="The scheduled soundness-weekly run failed: ${RUN_URL} (commit ${GITHUB_SHA}). Read the failing step; for the framework-table step, the usual cause is an engine change that moved the table -- regenerate with soundness/kappa_table/derive.sh and read the diff."
+          n="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "$n" ]; then gh issue comment "$n" --body "$body"; else gh issue create --title "$title" --body "$body"; fi

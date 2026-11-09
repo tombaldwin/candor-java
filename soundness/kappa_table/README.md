@@ -33,6 +33,18 @@ and the JVM option variables and pins config discovery to an empty file. Verifie
 Homebrew JDK 21 (macOS), Amazon Corretto 17 (macOS) with a `CANDOR_DEPS` seeded into the shell, and Temurin 21
 on Linux. Regenerate the package list with `FrameworkReachGen --jdk-packages` (see its header).
 
+## Why the weekly can fail between regenerations — and who hears about it
+
+Nothing at push time re-derives the table (it needs ~120 jars and ~10 minutes); `KappaFrameworkReachTest` checks only
+the checksums. So an engine commit that moves a charge leaves the checked-in table stale until the Monday
+`soundness-weekly` run says so. It did, twice (2026-10-26, 2026-11-02), and nobody read it: the cause was
+`e6ac6e1` (R1235 reapplied), which adds disclosure (`U`/`A` lines for members whose body reaches a JDK body that
+dispatches back into project code), and the table was regenerated only by the 2026-11-07/08 engine commits. The
+inputs are NOT the cause: jars are SHA-pinned, the JDK package list is checked in, and the same `--check` fails
+byte-for-byte (same entry count and content sha) on macOS JDK 21 and the Linux runner. A failed scheduled run now
+opens (or comments on) an issue. After any engine commit that touches how a body is charged, run `check.sh` and
+regenerate in that commit.
+
 ## The named miss — the JDK is OPAQUE, framework bodies are TRANSPARENT
 
 The closure stops at the JDK: there are no JDK bodies here, only the classifier's name rules. A framework

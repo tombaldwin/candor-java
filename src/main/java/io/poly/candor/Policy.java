@@ -2446,9 +2446,19 @@ final class Policy {
         if (hit != null) return hit;
         List<String> out = new ArrayList<>();
         int start = 0;
+        // R1548/R1549: an overloaded method is spelled `pkg.Cls.m(<param types>)`, and a parameter type is not
+        // a path — a layer is a package, module, nested type or namespace (SPEC §3.3). Inside parentheses
+        // `.`/`$` are part of the DISAMBIGUATOR, so the whole `m(…)` stays ONE segment. Splitting there made
+        // `only app -> user` PERMIT `bank.Bank.pay(ua.user.User)` and `deny Fs User` bite a function that
+        // merely takes a User. Both sides use this, so a scope spelled `bank.Bank.pay(ua.user.User)` still
+        // selects exactly that overload, and `m` still prefix-matches `m(…)`.
+        int paren = 0;
         for (int i = 0; i <= s.length(); i++) {
-            char c = i == s.length() ? '.' : s.charAt(i);
-            if (c == '.' || c == ':' || c == '$') {
+            boolean end = i == s.length();   // the end always flushes, even inside an unbalanced `(`
+            char c = end ? '.' : s.charAt(i);
+            if (!end && c == '(') paren++;
+            else if (!end && c == ')' && paren > 0) paren--;
+            else if (end || (paren == 0 && (c == '.' || c == ':' || c == '$'))) {
                 if (i > start) out.add(s.substring(start, i));
                 start = i + 1;
             }

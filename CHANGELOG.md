@@ -9,6 +9,15 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **⚠ A scope no longer matches inside an overload's parameter list (SOUNDNESS R1548, R1549).** An overloaded method whose
+  parameter simple names collide is spelled with fully-qualified parameter types, `bank.Bank.pay(ua.user.User)`, and scope
+  matching split that whole name on `.`/`$`, so the parameter types became path segments. `only app -> user` therefore
+  PERMITTED a call to `bank.Bank.pay(ua.user.User)` (a file write in `bank`, which the rule does not permit) and exited 0
+  "no violations"; it now exits 1. In the other direction `deny Fs User`, `pure user`, and a `forbid`/`only`/`allow ... in`
+  scope naming a parameter type bit a function that merely takes that type; they no longer do. The parameter list now stays
+  ONE segment, so a scope spelled with it (`bank.Bank.pay(ua.user.User)`) still selects exactly that overload, `pay` still
+  prefix-matches it, and `bank`, `bank.Bank` and `deny Fs bank` match as before. Applies to the scan route and `gate --report`.
+
 - **⚠ A call that runs a framework body on a project object is now charged the project overrides that body calls back
   (SOUNDNESS R1511).** `class CbPeriod extends org.joda.time.base.BasePeriod` overriding `getValue(int)` with a file read:
   `p.hashCode()`, `p.getValues()` and `p.equals(q)` run joda's `AbstractPeriod` bodies, which call `this.getValue(i)`

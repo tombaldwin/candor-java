@@ -9,6 +9,19 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **⚠ A consumer object handed to a framework method is now charged the callback its INHERITED framework body makes
+  on it (SOUNDNESS R1573).** commons-validator's `Form.addField(Field f)` runs `f.getKey()`, and `Field.getKey` runs
+  `this.generateKey()` → `this.isIndexed()`. A `Cb extends Field` that overrides only `isIndexed()` with an env read
+  runs that read (executed), but `new Form().addField(c)` read pure and the consumer had no row. joda's
+  `PeriodConverter.setInto(c, ..)` behaved the same way through the inherited `MutablePeriod.setPeriod` → `this.setValues`.
+  The direct `c.getKey()` was already charged (R1511). The joins for a member dispatched on an argument (the table's
+  `p<i>:` entries) and for a consumer-implementable member (`D` keys, R1565) looked only for a project BODY of that
+  member, so a class that inherits it and overrides only the callback was skipped. Such a class now gets the same
+  `this`-callback closure a direct call gets, looked up under its nearest framework superclass. This is a resolution:
+  `deny Env` goes from 0 to 1 on both executed cases and on intermediate-class, abstract-consumer,
+  declared-as-framework-type and first-hop variants, and every pure twin stays 0. It only ADDS. The new edges are
+  fanned out on their own, so they can never turn an existing edge into a broad `Unknown`. `CANDOR_R1573=0` is the
+  measurement arm.
 - **⚠ A framework call whose body dispatches on an object the consumer supplies is now charged the consumer's
   implementer (SOUNDNESS R1565, R1569).** joda's `PreciseDurationField.hashCode` runs `getType().hashCode()`, ehcache's
   `EventListenerWrapper.hashCode`/`equals` run `listener.hashCode()`/`equals`, jakarta.mail's `FromTerm.hashCode` hashes

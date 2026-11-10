@@ -194,6 +194,11 @@ final class AnalysisContext {
      *  answers. Memos of a pure function of the fixed hierarchy, like {@code chaTargetsCache}. */
     Map<String, List<String>> crossBoundaryIndex = new HashMap<>();
     Map<String, List<String>> crossBoundaryCache = new HashMap<>();
+    /** SOUNDNESS R1573 — Cha#inheritedCallbacks per {@code class \t name+desc}, and Cha#frameworkDispatchJoin's
+     *  inherited-member union per D key: pure functions of the fixed hierarchy and the framework table, memoized
+     *  because one D key recurs at every call site (measured: a 1s scan took 7s without them). */
+    Map<String, List<String>> inheritedCallbackMemo = new HashMap<>();
+    Map<String, List<String>> inheritedDispatchMemo = new HashMap<>();
     /** SOUNDNESS R131 — memo for {@link Candor#externalSupertypeEffects}: the effects an EXTERNAL owner
      *  inherits from a CLASSIFIER-MODELLED supertype, keyed {@code owner \t name+desc}. A pure function of
      *  the classifier's rules and the (fixed) external hierarchy, exactly like {@code chaTargetsCache},
@@ -516,6 +521,7 @@ final class AnalysisContext {
         unanalyzed = master.unanalyzed;                     peekedClasses = master.peekedClasses;
         transSupersCache = master.transSupersCache;         chaTargetsCache = master.chaTargetsCache;
         crossBoundaryIndex = master.crossBoundaryIndex;     crossBoundaryCache = master.crossBoundaryCache;   // R1509
+        inheritedCallbackMemo = master.inheritedCallbackMemo; inheritedDispatchMemo = master.inheritedDispatchMemo; // R1573
         annoMetaCache = master.annoMetaCache;               sealedClosedMemo = master.sealedClosedMemo;
         sealedUnseenMemo = master.sealedUnseenMemo;         externalSupersCache = master.externalSupersCache;
         resolutionOrderCache = master.resolutionOrderCache; depTransWhyMemo = master.depTransWhyMemo;
@@ -631,7 +637,8 @@ final class AnalysisContext {
             "sealedUnseenMemo", "externalSupersCache", "resolutionOrderCache", "depTransWhyMemo",
             "depTransDispatchMemo",
             "extSuperEffectMemo", "depUpWalkMemo", "depFrontierMemo",
-            "provFramesCache", "depOwnersBySig", "literalFixpointMemo");
+            "provFramesCache", "depOwnersBySig", "literalFixpointMemo",
+            "inheritedCallbackMemo", "inheritedDispatchMemo");
 
     /** Sizes of the shared inputs, for {@link #assertNoInputGrowth}.
      *

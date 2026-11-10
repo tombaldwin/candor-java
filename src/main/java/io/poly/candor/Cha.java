@@ -1403,7 +1403,7 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         boolean init = name.equals("<init>");
         ProvValue recv = receiverProv(provFrameAt(s, min), min);
         String exact = recv == null ? null : recv.newType;
-        Set<String> bodies = new LinkedHashSet<>();
+        Set<String> bodies = new LinkedHashSet<>(), inh = new LinkedHashSet<>();   // inh: R1573, fanned out on its own
         List<String> trace = R1511_DEBUG ? new ArrayList<>() : null;
         if (op == Opcodes.INVOKESPECIAL) {
             // super.m() / super(…): the body min.owner resolves to runs on THIS. Not a `new X(…)`, whose receiver is X.
@@ -1418,7 +1418,7 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
             }
             if (f == null) return;
             for (String p : c.subtypeIndex.getOrDefault(s.cls.name, List.of())) templateBodies(c, p, f, name, desc, bodies, trace);
-            templateArgBodies(c, s, min, f, bodies, trace);
+            templateArgBodies(c, s, min, f, bodies, inh, trace);
         } else {
             if (init) return;
             Set<String> ps = new LinkedHashSet<>(), keys = new LinkedHashSet<>();
@@ -1439,10 +1439,26 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
                     ? firstFrameworkSuper(c, min.owner) : null) : min.owner;
             if (exact != null) { if (!c.byName.containsKey(exact)) keys.add(exact); }
             else if (o != null) keys.add(o);
-            for (String k : keys) templateArgBodies(c, s, min, k, bodies, trace);
+            for (String k : keys) templateArgBodies(c, s, min, k, bodies, inh, trace);
         }
         bodies.remove(s.id);
-        if (bodies.isEmpty()) return;
+        inh.removeAll(bodies);
+        inh.remove(s.id);
+        if (!inh.isEmpty()) {
+            // SOUNDNESS R1573: priced apart from `bodies`, so its fan-out never turns their edges into a disclosure
+            if (inh.size() <= Rules.CHA_FANOUT_LIMIT) c.edges.computeIfAbsent(s.id, k -> new LinkedHashSet<>()).addAll(inh);
+            else {
+                s.dir.add(io.poly.candor.model.Effect.UNKNOWN);
+                c.unknownWhy.computeIfAbsent(s.id, k -> new TreeSet<>()).add(io.poly.candor.model.UnknownReason.of(
+                        io.poly.candor.model.UnknownReason.Kind.DISPATCH, min.owner.replace('/', '.') + "." + name));
+            }
+        }
+        if (bodies.isEmpty()) {
+            if (R1511_DEBUG && !inh.isEmpty()) for (String t : trace)
+                System.err.println("R1511E\t" + s.cls.name + "." + s.mn.name + s.mn.desc + "\t" + op + "\t" + min.owner + "." + name + desc
+                        + "\t" + t + "\t" + (inh.size() <= Rules.CHA_FANOUT_LIMIT ? "EDGE" : "BROAD"));
+            return;
+        }
         if (R1511_DEBUG) for (String t : trace)
             System.err.println("R1511E\t" + s.cls.name + "." + s.mn.name + s.mn.desc + "\t" + op + "\t" + min.owner + "." + name + desc
                     + "\t" + t + "\t" + (bodies.size() <= Rules.CHA_FANOUT_LIMIT ? "EDGE" : "BROAD"));
@@ -1500,13 +1516,29 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
             keys = new ArrayList<>(u);
         } else keys = FrameworkReach.dispatchMembers(f, min.name, min.desc);
         if (keys.isEmpty()) return;
-        Set<String> bodies = new LinkedHashSet<>();
+        Set<String> bodies = new LinkedHashSet<>(), inherited = new LinkedHashSet<>();
         boolean broad = false;
-        String broadKey = null;
+        String broadKey = null, inheritedKey = null;
         for (String key : keys) {
             int paren = key.indexOf('('), dot = paren < 0 ? -1 : key.lastIndexOf('.', paren);
             if (dot <= 0) continue;
             String o = key.substring(0, dot), n = key.substring(dot + 1, paren), d = key.substring(paren);
+            if (R1573) {
+                // SOUNDNESS R1573: a consumer class that INHERITS the dispatched member runs the framework body, which
+                // calls back its own overrides. Kept apart from `bodies`, so its fan-out never turns the edges the
+                // implementer join already makes into a broad disclosure (it only adds).
+                List<String> u = c.inheritedDispatchMemo.get(key);
+                if (u == null || R1573_DEBUG) {
+                    Set<String> ps = new LinkedHashSet<>(c.subtypeIndex.getOrDefault(o, List.of()));
+                    ps.addAll(crossBoundarySubtypes(c, o));
+                    Set<String> g = new LinkedHashSet<>();
+                    for (String p : ps) inheritedCallbacks(c, s, p, n, d, g, null);
+                    u = List.copyOf(g);
+                    c.inheritedDispatchMemo.put(key, u);
+                }
+                if (!u.isEmpty() && inheritedKey == null && !inherited.containsAll(u)) inheritedKey = o.replace('/', '.') + "." + n;
+                inherited.addAll(u);
+            }
             List<String> impls = new ArrayList<>(chaTargets(o, n, d));
             for (String l : samLambdaImplementors(o, n, d)) if (!impls.contains(l)) impls.add(l);
             for (String x : crossBoundaryTargets(o, n, d)) if (!impls.contains(x)) impls.add(x);
@@ -1518,6 +1550,11 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
                 System.err.println("R1565E\t" + s.id + "\t" + f + "." + min.name + min.desc + "\t" + key + "\t" + b);
         }
         if (!bodies.isEmpty()) c.edges.computeIfAbsent(s.id, k -> new LinkedHashSet<>()).addAll(bodies);
+        inherited.remove(s.id);
+        if (!inherited.isEmpty()) {
+            if (inherited.size() <= Rules.CHA_FANOUT_LIMIT) c.edges.computeIfAbsent(s.id, k -> new LinkedHashSet<>()).addAll(inherited);
+            else if (!broad) { broad = true; broadKey = inheritedKey; }
+        }
         if (broad) {
             s.dir.add(io.poly.candor.model.Effect.UNKNOWN);
             c.unknownWhy.computeIfAbsent(s.id, k -> new TreeSet<>()).add(io.poly.candor.model.UnknownReason.of(
@@ -1562,7 +1599,7 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
      *  {@code new} type, else the project subtypes of {@code owner} (narrowed to those of the argument's declared type
      *  when that is a project class). The receiver's own class plays no part: the argument's override runs. */
     private static void templateArgBodies(AnalysisContext c, MethodScan s, MethodInsnNode min, String f, Set<String> out,
-            List<String> trace) {
+            Set<String> inh, List<String> trace) {
         if (FrameworkReach.jdkOwned(f) || languageRuntimeOwned(f)) return;
         Type[] args = Type.getArgumentTypes(min.desc);
         org.objectweb.asm.tree.analysis.Frame<ProvValue> fr = provFrameAt(s, min);
@@ -1589,11 +1626,46 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
                 ClassNode pn = c.byName.get(p);
                 if (pn == null || (pn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT)) != 0) continue;
                 String b = projectBodyOf(c, p, m, md);
-                if (b == null) continue;
+                if (b == null) {
+                    // SOUNDNESS R1573: p INHERITS the member's framework body, which runs on the argument and calls back
+                    // p's own overrides — the T closure of that inherited body, as for a direct call (templateCallbacks)
+                    if (R1573) inheritedCallbacks(c, s, p, m, md, inh, trace);
+                    continue;
+                }
                 out.add(b);
                 if (trace != null) trace.add(p + "\t" + f + "\t" + e + "\t" + b);
             }
         }
+    }
+
+    /** The kill switch: {@code CANDOR_R1573=0} makes {@link #inheritedCallbacks} join nothing (a measurement arm). */
+    static final boolean R1573 = !"0".equals(System.getenv("CANDOR_R1573"));
+    static final boolean R1573_DEBUG = System.getenv("CANDOR_R1573_DEBUG") != null;
+
+    /** SOUNDNESS R1573 — a framework member DISPATCHED on a consumer object (a {@code p<i>:} entry or a D key) that the
+     *  object's class INHERITS from a framework class runs that framework body on the object, and the body calls back
+     *  the object's own overrides. The joins above look only for a project BODY of the dispatched member, so a class
+     *  that overrides only the callback was never reached: commons-validator's {@code Form.addField(Field f)} runs
+     *  {@code f.getKey()}, {@code Field.getKey} runs {@code this.generateKey()} -> {@code this.isIndexed()}, and a
+     *  {@code Cb extends Field} overriding only {@code isIndexed()} with an env read (EXECUTED) read pure — while the
+     *  direct {@code c.getKey()} was charged by {@link #templateCallbacks}. This is that same closure, applied to the
+     *  inheriting class: {@link #templateBodies} under p's nearest framework superclass, the body p inherits. Concrete
+     *  p only ({@link #templateBodies} checks), and only when p has no project body of the member (a class with one is
+     *  the caller's ordinary join). ADDITIVE only. */
+    private static void inheritedCallbacks(AnalysisContext c, MethodScan s, String p, String name, String desc,
+            Set<String> out, List<String> trace) {
+        String k = p + "\t" + name + desc;
+        List<String> got = c.inheritedCallbackMemo.get(k);
+        if (got == null) {
+            Set<String> g = new LinkedHashSet<>();
+            String f = projectBodyOf(c, p, name, desc) != null ? null : firstFrameworkSuper(c, p);
+            if (f != null) templateBodies(c, p, f, name, desc, g, trace);
+            got = List.copyOf(g);
+            c.inheritedCallbackMemo.put(k, got);
+        }
+        if (R1573_DEBUG) for (String b : got)
+            System.err.println("R1573E\t" + s.id + "\t" + p + "\t" + firstFrameworkSuper(c, p) + "." + name + desc + "\t" + b);
+        out.addAll(got);
     }
 
     /** The first non-project class up {@code p}'s superclass chain (the one whose bodies {@code p} inherits), or null

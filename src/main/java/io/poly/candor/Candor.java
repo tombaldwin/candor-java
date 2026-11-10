@@ -2582,6 +2582,17 @@ public class Candor {
             return;
         }
 
+        // ⟨0.42⟩ SPEC §3.3 cause (e) / §3.4 (c)(i), SOUNDNESS R1634: A GATE EVALUATED UNDER A SET RESULT-MOVING SWITCH IS
+        // UNANSWERABLE. A switch this process consulted selects logic other than the unset one, so the engine that would
+        // judge was itself altered by its environment. The report is ALREADY WRITTEN above (and carries `switches`): the
+        // refusal is the gate's, and the report is what a harness attributes on. Checked BEFORE any gate mode runs, and
+        // again after the policy has been evaluated (a switch read only by the gate, such as `CANDOR_D1_SEED`, is
+        // consulted there); a violation does not dominate it (§3.3 (e): a finding computed under a switch is computed
+        // from bytes whose meaning relative to `spec` is unknown).
+        // `enforce` also holds for a taint-only scan, which is an advisory and judges nothing: no gate, nothing to refuse.
+        final boolean gateRequested = baseline != null || noAmbient != null || strict != null || policy != null || gateJson != null;
+        if (gateRequested) refuseIfSwitched(gateJson);
+
         int violations = 0;
         if (strict != null) violations += (ccFull != null)
                 ? checkConformance(ccFull, strict)        // reuse the report's full conformance
@@ -2620,6 +2631,7 @@ public class Candor {
                 unevaluated.addAll(po.unevaluated());
             }
         }
+        if (gateRequested) refuseIfSwitched(gateJson);   // ⟨0.42⟩ a switch consulted BY the gate evaluation itself (see above)
         // AS-EFF-007 is a heuristic ADVISORY (spec §6): emit findings but never fail CI on its own.
         int advisories = ctx().taintEnabled ? checkTaint(inferred) : 0;
         // THE GREEN LINE IS PRINTED BELOW, AFTER THE EXIT-2 ARMS — not here. Measured 2026-08-19: this
@@ -2906,6 +2918,10 @@ public class Candor {
         out.put("analyzed", an);
         policyVocabularyJson(out);
         netPartnersJson(out);
+        // ⟨0.42⟩ SPEC §3.4 (d), SOUNDNESS R1634: a chained dependency report that carries `switches` — an additive verdict key, ordered
+        // by package, OMITTED when empty. Advisory: `ok`, `violations` and the exit are what they would be without it.
+        var switchedDeps = Loader.switchedDependencies();
+        if (!switchedDeps.isEmpty()) out.put("switchedDependencies", switchedDeps);
         // ⟨0.41⟩ SPEC §6.2: an exit-2 incomplete verdict "makes no claim about violations", and PART 105 pins the
         // document WITHOUT the key when a policy carries `accept` lines. Only then: with no `accept` entry the
         // incomplete document keeps the `violations: []` every engine has always written (byte-identical, and
@@ -3193,10 +3209,10 @@ public class Candor {
         // what it had broken. This ran to completion, printed a report summary, and returned success over
         // the operator's destroyed dependency.
         addPeekClasspathInputs(out, prePeekClasspath, "--peek-classpath");
-        addPeekClasspathInputs(out, System.getenv("CANDOR_PEEK_CLASSPATH"), "CANDOR_PEEK_CLASSPATH");
+        addPeekClasspathInputs(out, Env.operator("CANDOR_PEEK_CLASSPATH"), "CANDOR_PEEK_CLASSPATH");
         for (var e : new String[][]{{"CANDOR_POLICY", "CANDOR_POLICY"}, {"CANDOR_BASELINE", "CANDOR_BASELINE"},
                                     {"CANDOR_CONFIG", "CANDOR_CONFIG"}}) {
-            String v = System.getenv(e[0]);
+            String v = Env.operator(e[0]);
             if (v == null || v.isEmpty()) continue;
             // ⟨0.28⟩ THE BASELINE IS A REPORT LOCATOR, AND ITS LOADER READS THE PAIR. checkBaseline
             // loads `<stem>.callgraph.json` through Query.loadCallgraphSignalled — the ⟨0.16⟩
@@ -3211,7 +3227,7 @@ public class Candor {
             if (e[0].equals("CANDOR_BASELINE")) { if (!noBaselineFlag) addReportInput(out, v, e[1]); }
             else out.add(new String[]{v, e[1]});
         }
-        String deps = System.getenv("CANDOR_DEPS");
+        String deps = Env.operator("CANDOR_DEPS");
         if (deps != null) for (String d : deps.split("[" + java.io.File.pathSeparator + ",\\s]+"))
             if (!d.isEmpty()) {
                 addReportInput(out, d, "a CANDOR_DEPS report");
@@ -3257,7 +3273,7 @@ public class Candor {
         // config load and must not pre-empt its refusal, and its values are already anchor-resolved.
         try {
             Path cfg = null;
-            String override = System.getenv("CANDOR_CONFIG");
+            String override = Env.operator("CANDOR_CONFIG");
             if (override != null) { Path o = Path.of(override); if (Files.isRegularFile(o)) cfg = o; }
             if (cfg == null) cfg = Config.discover(Path.of(target));
             if (cfg != null) {
@@ -3601,6 +3617,19 @@ public class Candor {
         }
     }
 
+    /** ⟨0.42⟩ SPEC §3.3 cause (e): refuse (exit 2, the §3.1 refusal document carrying {@code switches} and a {@code reason}
+     *  that names them) when this process has consulted a result-moving switch. A no-op otherwise. The names are the
+     *  process's own consulted set at THIS moment, so a caller that checks again later names any switch read in between. */
+    static void refuseIfSwitched(String gateJson) {
+        java.util.List<String> sw = Env.consultedSwitches();
+        if (sw.isEmpty()) return;
+        String why = Env.switchRefusalReason(sw);
+        System.err.println("candor-java: " + why);
+        decidedRefusal = why;
+        writeRefusedGateJson(gateJson, why, java.util.List.of(), sw);
+        System.exit(2);
+    }
+
     /** Has a gate document (verdict or refusal) been emitted by this run? Consulted only by the
      *  stream-sink shutdown hook below; set by {@link #writeGateJson} and {@link #writeRefusedGateJson}. */
     static volatile boolean gateDocEmitted = false;
@@ -3900,12 +3929,20 @@ public class Candor {
      * not even opened, and a count would describe a universe the verdict says nothing about.
      */
     static void writeRefusedGateJson(String path, String reason, java.util.List<String[]> unevaluated) {
+        writeRefusedGateJson(path, reason, unevaluated, java.util.List.of());
+    }
+
+    /** ⟨0.42⟩ SPEC §3.3 cause (e): a refusal whose cause is a SET RESULT-MOVING SWITCH carries the names, code-point
+     *  sorted, in {@code switches} (SOUNDNESS R1634). Every other refusal passes none, and the key is then absent. */
+    static void writeRefusedGateJson(String path, String reason, java.util.List<String[]> unevaluated,
+                                     java.util.List<String> switches) {
         if (path == null) return;
         var out = new java.util.LinkedHashMap<String, Object>();
         out.put("spec", SPEC_VERSION);
         out.put("ok", false);
         out.put("refused", true);
         out.put("reason", reason);
+        if (switches != null && !switches.isEmpty()) out.put("switches", switches);
         policyVocabularyJson(out);   // a refusal can be CAUSED by the vocabulary too — name the file
         if (!unevaluated.isEmpty()) out.put("unevaluated", unevaluatedJson(unevaluated));
         try {
@@ -4593,7 +4630,7 @@ public class Candor {
 
     /** {@code CANDOR_R1078_DEBUG} prints each folded bridge call taken by {@link #bridgeSelfForward} (the reach
      *  probe); {@code -Dcandor.r1078=off} restores the ordinary path (the A/B's one-variable arm). */
-    static final boolean R1078_DEBUG = System.getenv("CANDOR_R1078_DEBUG") != null;
+    static final boolean R1078_DEBUG = Env.trace("CANDOR_R1078_DEBUG") != null;
     static final boolean R1078_OFF = "off".equals(System.getProperty("candor.r1078"));
 
     /** Whether the JVM, invoking {@code (name, bridgeDesc)} on an instance of {@code sub}, selects the bridge
@@ -5799,7 +5836,7 @@ public class Candor {
             // Unknown where some project throwable's toString/getMessage carries an effect the caller lacks. An edge would
             // charge that effect as if it ran — and for a receiver with no cause at all it does not (the R1300 control
             // kPstPure: a pure toString, no cause, nothing written)
-            if (R1306 && ArgContract.floor("S4") && min.getOpcode() != Opcodes.INVOKESTATIC && Cha.isPrintStackTrace(min.name, min.desc)
+            if (R1306.on() && ArgContract.floor("S4") && min.getOpcode() != Opcodes.INVOKESTATIC && Cha.isPrintStackTrace(min.name, min.desc)
                     && (min.owner.equals("java/lang/Throwable") || transSupers(min.owner).contains("java/lang/Throwable")))
                 ctx().argContractFloor.computeIfAbsent(id, k -> new TreeSet<>())
                         .add("java/lang/Throwable.toString()Ljava/lang/String;\tjava/lang/Throwable\tS4");
@@ -5916,7 +5953,7 @@ public class Candor {
 
     /** SOUNDNESS R1305 — the arguments a JDK {@code Throwable} constructor runs {@code toString()} on
      *  (the derived JDK site table, {@link JdkSites#argsHooking}); empty for any other instruction. */
-    static final boolean R1306 = !"0".equals(System.getenv("CANDOR_R1306"));
+    static final Env.Switch R1306 = Env.killSwitch("CANDOR_R1306");   // lazy: Candor is the main class, so every verb loads it (§3.4 (a))
 
     /** SOUNDNESS R1337 — A STRINGIFIED CAUSE THAT IS THIS BODY'S OWN PARAMETER, DECLARED BY AN OPEN JDK TYPE, IS NOT
      *  CHA'D OVER THAT TYPE HERE. {@code CliException(Throwable c) { super(c); }} was edged to the {@code toString} (and,
@@ -5933,11 +5970,11 @@ public class Candor {
      *  charged as if every one ran. A PROJECT declared type keeps the CHA edge (a closed, enumerable set).
      *  {@code CANDOR_R1337=0} restores the edge, as a measurement arm. */
     static boolean openParamOperand(MethodScan s, ProvValue v) {
-        if (!R1337 || v == null || v.declType == null || !v.declType.startsWith("java/") || s.provFrames == null
+        if (!R1337.on() || v == null || v.declType == null || !v.declType.startsWith("java/") || s.provFrames == null
                 || s.provFrames[0] == null) return false;
         return paramIndexOf(s.mn, v, s.provFrames[0]) >= 0;
     }
-    static final boolean R1337 = !"0".equals(System.getenv("CANDOR_R1337"));
+    static final Env.Switch R1337 = Env.killSwitch("CANDOR_R1337");   // lazy: Candor is the main class, so every verb loads it (§3.4 (a))
 
     static int[] throwableCtorStringified(MethodInsnNode min) {
         if (min.getOpcode() != Opcodes.INVOKESPECIAL || !min.name.equals("<init>") || !min.owner.startsWith("java/"))
@@ -6099,7 +6136,7 @@ public class Candor {
         }
     }
 
-    static final boolean FWREACH_DEBUG = System.getenv("CANDOR_FWREACH_DEBUG") != null;
+    static final boolean FWREACH_DEBUG = Env.trace("CANDOR_FWREACH_DEBUG") != null;
 
     /** SOUNDNESS R492/R727 — the {@link FrameworkReach} charges for this call site. Two spellings reach the same
      *  library body and both are asked: the EXTERNAL owner itself, and an inherited member called through a project
@@ -6197,7 +6234,7 @@ public class Candor {
         if (R1097_DEBUG) System.err.println("R1097XJAR\t" + (unseen ? "DISCLOSE" : "RESOLVED") + "\t" + s.id + "\t"
                 + min.owner + "." + min.name + min.desc);
     }
-    static final boolean R1097_DEBUG = System.getenv("CANDOR_R1097_DEBUG") != null;
+    static final boolean R1097_DEBUG = Env.trace("CANDOR_R1097_DEBUG") != null;
 
     /** {@code A} is a dispatch the table could not follow; {@code U}/{@code X} are a dependency body this scan
      *  cannot account for — the registered {@code dep} kind, which projects to {@code unresolved} (SPEC §6.2). */
@@ -7852,7 +7889,7 @@ public class Candor {
                 // Unknown` 0 where the one-tree scan hedges (v0.40.14, v0.40.15; executed). The receiver's DECLARED
                 // type is the dependency's class, which is not the root type the §4 MAY covers, so the walk runs from
                 // it: R1360's bound and rule, exactly as for an owner that declares the member.
-                if (R1378 && min.owner.equals("java/lang/Object") && isObjectProtocolExempt(min.name, min.desc)
+                if (R1378.on() && min.owner.equals("java/lang/Object") && isObjectProtocolExempt(min.name, min.desc)
                         && provFrames != null) {
                     Frame<ProvValue> rf = provFrames[mn.instructions.indexOf(min)];
                     ProvValue rv = rf == null ? null : receiverProv(rf, min);
@@ -8815,7 +8852,7 @@ public class Candor {
         return null;
     }
 
-    static final boolean R868_DEBUG = System.getenv("CANDOR_R868_DEBUG") != null;
+    static final boolean R868_DEBUG = Env.trace("CANDOR_R868_DEBUG") != null;
 
     /** What the walk UP from a chained dependency owner reaches — see {@link #depUpWalk}. {@code joins}:
      *  the chained entries to inherit, nearest first, ending at the first one the owning package published
@@ -9022,11 +9059,11 @@ public class Candor {
         }
     }
 
-    static final boolean R867_DEBUG = System.getenv("CANDOR_R867_DEBUG") != null;
+    static final boolean R867_DEBUG = Env.trace("CANDOR_R867_DEBUG") != null;
     /** SOUNDNESS R1360 — see depHierarchyJoin; {@code CANDOR_R1360=0} restores the Object-protocol exemption there. */
-    static final boolean R1360 = !"0".equals(System.getenv("CANDOR_R1360"));
+    static final Env.Switch R1360 = Env.killSwitch("CANDOR_R1360");   // lazy: Candor is the main class, so every verb loads it (§3.4 (a))
     /** SOUNDNESS R1378 — see the INVOKEVIRTUAL join; {@code CANDOR_R1378=0} restores the root-type reading. */
-    static final boolean R1378 = !"0".equals(System.getenv("CANDOR_R1378"));
+    static final Env.Switch R1378 = Env.killSwitch("CANDOR_R1378");   // lazy: Candor is the main class, so every verb loads it (§3.4 (a))
 
     /**
      * SOUNDNESS R867 — A CALL ON A CHAINED DEPENDENCY'S CLASS RUNS THAT DEPENDENCY'S OWN OVERRIDES TOO.
@@ -9171,7 +9208,7 @@ public class Candor {
         // The exemption's reason — a bare-`Object` receiver must not be charged every formatting body in the
         // world — is untouched: such a call's owner is `java/lang/Object`, never `depIndexed`, and never walks.
         // Kill switch: CANDOR_R1360=0 restores the row-counted, hedge-free branch.
-        boolean protocolOff = isObjectProtocolExempt(name, desc) && !R1360;
+        boolean protocolOff = isObjectProtocolExempt(name, desc) && !R1360.on();
         // R1336 / SPEC PART 30 P6 — WHERE THE COUNT IS UNANSWERABLE, THE PRODUCER'S UNION ENTRY DECIDES. The count
         // needs a PAIRED, COMPLETE call-graph sidecar for every subtype walked (Loader#pairDepCallgraphs); a missing,
         // unpaired or incomplete sidecar, an overloaded owner's bare qual, or CANDOR_R1336=0 leaves it unanswerable.
@@ -10839,15 +10876,15 @@ public class Candor {
      *  the changed branch: four rows in this register ran a full A/B, returned identical, and only
      *  afterwards was it found by grep that the corpus contained zero instances of the shape. Printed at
      *  the MEMO MISS, so the count is distinct call KEYS rather than call sites. */
-    private static final boolean R131_DEBUG = System.getenv("CANDOR_R131_DEBUG") != null;
-    private static final boolean R533_DEBUG = System.getenv("CANDOR_R533_DEBUG") != null;
+    private static final boolean R131_DEBUG = Env.trace("CANDOR_R131_DEBUG") != null;
+    private static final boolean R533_DEBUG = Env.trace("CANDOR_R533_DEBUG") != null;
 
     /** {@code CANDOR_R674_DEBUG=1} — print one line per (unit, call, effect) the R131 walk's charge is
      *  ROUTED through {@link #effectMetadata}/{@link #extractLiteralSurfaces} for. Printed per SITE, not
      *  per memo miss: the question this answers is how much of a corpus reaches the R674 loop at all, and
      *  a zero here means an A/B over that corpus is SAFETY-ONLY however clean it looks. */
-    private static final boolean R674_DEBUG = System.getenv("CANDOR_R674_DEBUG") != null;
-    private static final boolean R814_DEBUG = System.getenv("CANDOR_R814_DEBUG") != null;
+    private static final boolean R674_DEBUG = Env.trace("CANDOR_R674_DEBUG") != null;
+    private static final boolean R814_DEBUG = Env.trace("CANDOR_R814_DEBUG") != null;
 
     /** {@code CANDOR_R716_DEBUG=1} — print one line per METHOD-REFERENCE site whose classifier answer is
      *  {@code Unknown} and therefore now carries a reason. Same purpose as the two above and the same
@@ -10855,14 +10892,14 @@ public class Candor {
      *  changed branch, and four rows in this register ran a full A/B, came back identical, and were only
      *  afterwards found by grep to have had zero instances of the shape. A zero here means the sweep is
      *  SAFETY-ONLY, whatever else it says. */
-    private static final boolean R716_DEBUG = System.getenv("CANDOR_R716_DEBUG") != null;
+    private static final boolean R716_DEBUG = Env.trace("CANDOR_R716_DEBUG") != null;
 
     /** {@code CANDOR_R717_DEBUG=1} — print one line per PROJECT-OWNER-walk site where the walk charged
      *  {@code Unknown} but {@code effect} ended up something else, i.e. the reasonless charge R717 names.
      *  Expected to be ZERO on this census — it needs two modelled supertypes of one project class that
      *  DISAGREE — so this flag is what turns "we think it is rare" into a number, and the fixture in
      *  {@code SupertypeWalkGuardRoutingTest} is what proves the branch can fire at all. */
-    private static final boolean R717_DEBUG = System.getenv("CANDOR_R717_DEBUG") != null;
+    private static final boolean R717_DEBUG = Env.trace("CANDOR_R717_DEBUG") != null;
 
     /** THE DENYLIST FOR {@link #externalSupertypeEffects}, ASKED OF THE CLASSIFIER RATHER THAN WRITTEN
      *  BY HAND — whether the rule that just fired for {@code owner} is an OWNER-BLANKET rule (every
@@ -11324,7 +11361,7 @@ public class Candor {
         else if (contract.equals(C_EQUALS)) recordObjectProtocolMember(ctx(), callerId, declType, "equals", "(Ljava/lang/Object;)Z");
         // SOUNDNESS R1306 — the re-entry bodies chaTargets held back (Cha#heldReentry) were dropped here without a word;
         // decided after the loop by the floor (an ExactTypes site with no frame: its producers are unknown by design)
-        if (R1306 && contract.equals(C_TOSTRING) && !Cha.heldReentry(declType, C_TOSTRING, "()Ljava/lang/String;").isEmpty())
+        if (R1306.on() && contract.equals(C_TOSTRING) && !Cha.heldReentry(declType, C_TOSTRING, "()Ljava/lang/String;").isEmpty())
             ctx().objProtoSites.computeIfAbsent(callerId, k -> new TreeSet<>()).add(
                     "\t\t-1\t-1\t" + declType + "\t" + C_TOSTRING + "\t()Ljava/lang/String;\tS");
         // ACROSS THE SCAN BOUNDARY. `reentryTargets` ends in `chaTargets`, which scans PROJECT classes only
@@ -11536,7 +11573,7 @@ public class Candor {
      */
     private static long timingMark = 0L;
     static boolean timingOn() {
-        String v = System.getenv("CANDOR_TIMING");
+        String v = Env.trace("CANDOR_TIMING");
         return v != null && !v.isEmpty() && !v.equals("0");
     }
     static void phase(String name) {
@@ -11834,7 +11871,7 @@ public class Candor {
     /** SOUNDNESS R477 — {@code CANDOR_MASK_DEBUG=1} makes each masking-guard firing print one line, so a
      *  corpus A/B can count REACH instead of inferring it from the diff. Read once; off by default and
      *  invisible to every report. The java counterpart of candor-rust's {@code CANDOR_MASK_DEBUG}. */
-    static final boolean MASK_DEBUG = System.getenv("CANDOR_MASK_DEBUG") != null;
+    static final boolean MASK_DEBUG = Env.trace("CANDOR_MASK_DEBUG") != null;
 
     /** SOUNDNESS R595 — {@code CANDOR_R595_DEBUG=1} prints one line per FIELD-BOUND dispatch whose field is
      *  externally reassignable, i.e. per firing of the added disclosure. Same reason as {@link #MASK_DEBUG}
@@ -11842,7 +11879,7 @@ public class Candor {
      *  REACH the changed branch, and four rows in this register ran a full A/B, came back identical, and
      *  only afterwards was it found by grep that the corpus held zero instances of the shape. Off by
      *  default and invisible to every report. */
-    static final boolean R595_DEBUG = System.getenv("CANDOR_R595_DEBUG") != null;
+    static final boolean R595_DEBUG = Env.trace("CANDOR_R595_DEBUG") != null;
 
     /** SOUNDNESS R477 — could this {@code Exec} call's RECEIVER be the program it launches?
      *
@@ -12604,7 +12641,7 @@ public class Candor {
                 h.getOwner(), h.getName(), h.getDesc(), h.isInterface()));
         if (named && R939_DEBUG) System.err.println("R939REF\t" + callerId + "\t" + h.getOwner() + "." + h.getName() + h.getDesc());
     }
-    static final boolean R939_DEBUG = System.getenv("CANDOR_R939_DEBUG") != null;
+    static final boolean R939_DEBUG = Env.trace("CANDOR_R939_DEBUG") != null;
 
     /** SOUNDNESS R1304 — SPEC §4 ⟨0.40⟩: a FORMATTING, EQUALITY OR HASHING member called on a receiver typed by this
      *  package's own abstraction is a dispatch through that abstraction, and obligation 1 names it, under the
@@ -12632,11 +12669,11 @@ public class Candor {
      *  site to name. */
     static boolean recordObjectProtocolMember(AnalysisContext ctx, String callerId, String declType, String name,
             String desc) {
-        if (!R1304 || declType == null || !isFormatEqHash(name, desc)) return false;
+        if (!R1304.on() || declType == null || !isFormatEqHash(name, desc)) return false;
         ClassNode cn = ctx.byName.get(declType);
         if (cn == null || (cn.access & Opcodes.ACC_PUBLIC) == 0
                 || (cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT)) == 0
-                   && !(R1304_CONCRETE && (cn.access & Opcodes.ACC_FINAL) == 0)) return false;
+                   && !(R1304_CONCRETE.on() && (cn.access & Opcodes.ACC_FINAL) == 0)) return false;
         ctx.dispatchDirect.computeIfAbsent(callerId, k -> new TreeSet<>()).add(declType + "." + name + desc);
         if (R1304_DEBUG) System.err.println("R1304NAME\t" + callerId + "\t" + declType + "." + name + desc);
         return true;
@@ -12646,11 +12683,11 @@ public class Candor {
     static boolean isFormatEqHash(String name, String desc) {
         return isObjectProtocolExempt(name, desc) && !name.equals("compareTo");
     }
-    static final boolean R1304 = !"0".equals(System.getenv("CANDOR_R1304"));
+    static final Env.Switch R1304 = Env.killSwitch("CANDOR_R1304");   // lazy: Candor is the main class, so every verb loads it (§3.4 (a))
     /** A public NON-FINAL CONCRETE class is an abstraction for this member too (a consumer subclass overrides it);
      *  {@code CANDOR_R1304_CONCRETE=0} narrows to interfaces and abstract classes, as a measurement arm. */
-    static final boolean R1304_CONCRETE = !"0".equals(System.getenv("CANDOR_R1304_CONCRETE"));
-    static final boolean R1304_DEBUG = System.getenv("CANDOR_R1304_DEBUG") != null;
+    static final Env.Switch R1304_CONCRETE = Env.killSwitch("CANDOR_R1304_CONCRETE");   // lazy: Candor is the main class, so every verb loads it (§3.4 (a))
+    static final boolean R1304_DEBUG = Env.trace("CANDOR_R1304_DEBUG") != null;
 
     static boolean recordDispatchedMember(AnalysisContext ctx, String callerId, MethodInsnNode min) {
         if (!isObjectProtocolExempt(min.name, min.desc)

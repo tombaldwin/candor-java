@@ -56,15 +56,14 @@ import static io.poly.candor.AnalysisState.ctx;
 final class GenericHedge {
     private GenericHedge() {}
 
-    static final boolean OFF = "off".equals(System.getProperty("candor.r1461"))
-            || "off".equals(System.getenv("CANDOR_R1461"));
-    static final boolean DEBUG = System.getenv("CANDOR_R1461_DEBUG") != null;
+    // the environment variable is read FIRST and unconditionally: `-Dcandor.r1461=off` beside it must not hide that it was set
+    static final boolean OFF = "off".equals(Env.switchRead("CANDOR_R1461", "off"::equals)) | "off".equals(System.getProperty("candor.r1461"));
+    static final boolean DEBUG = Env.trace("CANDOR_R1461_DEBUG") != null;
     /** A MEASUREMENT ARM, off by default and not a setting: {@code CANDOR_R1461_WIDE=1} (or {@code -Dcandor.r1461.wide=on})
      *  extends the hedge from the collection owners to EVERY generic JDK owner ({@code java.util.function},
      *  {@code java.util.concurrent}, …) and reads those owners' signatures off the host JDK's class files — so it is
      *  jar-only and host-dependent, which is one more reason it does not ship. */
-    static final boolean WIDE = "on".equals(System.getProperty("candor.r1461.wide"))
-            || "1".equals(System.getenv("CANDOR_R1461_WIDE"));
+    static final boolean WIDE = "1".equals(Env.switchRead("CANDOR_R1461_WIDE", "1"::equals)) | "on".equals(System.getProperty("candor.r1461.wide"));
     private static final int MAX_DEPTH = 8;
 
     // ---- the generic type model -------------------------------------------------------------------------------

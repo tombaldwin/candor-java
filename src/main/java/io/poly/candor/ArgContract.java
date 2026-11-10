@@ -84,8 +84,8 @@ import org.objectweb.asm.tree.analysis.Frame;
 final class ArgContract {
     private ArgContract() {}
 
-    static final boolean DEBUG = System.getenv("CANDOR_R1166_DEBUG") != null;
-    static final boolean DEBUG_EDGES = "2".equals(System.getenv("CANDOR_R1166_DEBUG"));
+    static final boolean DEBUG = Env.trace("CANDOR_R1166_DEBUG") != null;
+    static final boolean DEBUG_EDGES = "2".equals(Env.trace("CANDOR_R1166_DEBUG"));
 
     /** Is this dispatch one the argument contract covers? See the class doc for why exactly these. */
     static boolean isContractMember(AnalysisContext c, int op, String owner, String name, String desc) {
@@ -399,7 +399,7 @@ final class ArgContract {
      *  the bound, and the same operand handed to a project parameter that is stringified or compared (R1217); {@code S6}
      *  a call on a JDK stream decorator whose delegate the caller does not name ({@link JdkSites#decoratorDelegate}). */
     // not final: a test widens it in-process (ObjectProtocolProducersR1205Test#withFloors), the env being read-only there
-    static volatile Set<String> FLOOR = floorClasses(System.getenv("CANDOR_R1201_FLOOR"));
+    static volatile Set<String> FLOOR = floorClasses(Env.switchRead("CANDOR_R1201_FLOOR", v -> !floorClasses(v).equals(floorClasses(null))));
     static Set<String> floorClasses(String v) {
         if (v == null || v.isBlank()) return Set.of("S1", "S1d", "S2", "S2r", "S2o", "S3", "S4", "S5", "S6");
         if (v.trim().equals("all")) return Set.of("S1", "S1d", "S2", "S2r", "S2o", "S3", "S4", "S5", "S6");
@@ -641,7 +641,7 @@ final class ArgContract {
             List<String> xb = Cha.crossBoundaryTargets(owner, name, desc);
             if (!xb.isEmpty()) { cands = new ArrayList<>(cands); cands.addAll(xb); }
             // R1306, generalised by call-target round 2 to every member the site table re-enters
-            List<String> held = Candor.R1306 ? Cha.heldReentryAny(owner, name, desc) : List.of();
+            List<String> held = Candor.R1306.on() ? Cha.heldReentryAny(owner, name, desc) : List.of();
             if (!held.isEmpty()) { cands = new ArrayList<>(cands); cands.addAll(held); }   // SOUNDNESS R1306
             for (String b : cands)
                 if (newConcrete(fx, b, caller) || (R1303_UNKNOWN && newUnknown(fx, b, caller))) {
@@ -719,7 +719,7 @@ final class ArgContract {
     }
 
     /** {@code CANDOR_R1303_UNKNOWN=0} restores the concrete-only floor — a measurement arm, not a setting. */
-    static final boolean R1303_UNKNOWN = !"0".equals(System.getenv("CANDOR_R1303_UNKNOWN"));
+    static final boolean R1303_UNKNOWN = Env.killSwitchOn("CANDOR_R1303_UNKNOWN");
 
     /** The override carries {@code Unknown} and the caller does not. */
     private static boolean newUnknown(Map<String, EffectSet> fx, String body, String caller) {
@@ -816,7 +816,7 @@ final class ArgContract {
         // that declared type, by the one-body rule — the rule R1235 gave a parameter handed straight to Objects.hashCode.
         // Needed since a cause declared by an open JDK type is no longer CHA'd at the JDK constructor
         // (Candor#openParamOperand): `viaProject(MsgEx e) { return new CliEx(e); }` read Fs only through that CHA edge.
-        if (Candor.R1337)
+        if (Candor.R1337.on())
             for (var e : reach.entrySet()) {
                 String h = c.hashOf.get(e.getKey());
                 int paren = h == null ? -1 : h.indexOf('(');

@@ -175,7 +175,7 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
     static List<String> depDirectSupers(String internal) {
         List<String> dep = ctx().depSupers.get(internal);
         if (dep != null) {
-            if (System.getenv("CANDOR_DEPHIER_DEBUG") != null)
+            if (Env.trace("CANDOR_DEPHIER_DEBUG") != null)
                 System.err.println("DEPHIER hit " + internal + " -> " + dep);
             return dep;
         }
@@ -1072,7 +1072,7 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         return concreteTargets(recv, name, desc);
     }
 
-    static final boolean R1235_DEBUG = System.getenv("CANDOR_R1235_DEBUG") != null;
+    static final boolean R1235_DEBUG = Env.trace("CANDOR_R1235_DEBUG") != null;
 
     /** The node/edge id for a project method. UNIQUE name in its class → bare `class.method` (so every
      *  non-overloaded method, including every conformance fixture matched by leaf name, is unchanged).
@@ -1194,8 +1194,8 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
 
     /** The kill switch: {@code CANDOR_R1509=0} makes {@link #crossBoundaryTargets} answer nothing, which is the engine as
      *  it was before (a measurement arm, not an option). */
-    static final boolean R1509 = !"0".equals(System.getenv("CANDOR_R1509"));
-    static final boolean R1509_DEBUG = System.getenv("CANDOR_R1509_DEBUG") != null;
+    static final boolean R1509 = Env.killSwitchOn("CANDOR_R1509");
+    static final boolean R1509_DEBUG = Env.trace("CANDOR_R1509_DEBUG") != null;
     private static final String R1509_BUILT = "\u0000built";
 
     /** A NON-project type's direct supertypes for {@link #crossBoundaryTargets}' walk: a chained dependency's hierarchy
@@ -1280,7 +1280,7 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
     /** The language runtimes whose own library {@link #crossBoundaryTargets} treats as it treats the JDK: Scala's
      *  scala-library, Kotlin's stdlib ({@code kotlinx/} is an ordinary library and is NOT here) and Groovy's runtime.
      *  {@code CANDOR_R1509_LANG=0} lifts it (a measurement arm, not an option). */
-    static final boolean R1509_LANG = !"0".equals(System.getenv("CANDOR_R1509_LANG"));
+    static final boolean R1509_LANG = Env.killSwitchOn("CANDOR_R1509_LANG");
     static final List<String> LANGUAGE_RUNTIME = List.of("scala/", "kotlin/", "groovy/", "org/codehaus/groovy/");
 
     static boolean languageRuntimeOwned(String internalName) {
@@ -1354,8 +1354,8 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
     // ── SOUNDNESS R1511 — A FRAMEWORK BODY A PROJECT CLASS INHERITS CALLS BACK THAT CLASS'S OWN OVERRIDE ──────────────
 
     /** The kill switch: {@code CANDOR_R1511=0} makes {@link #templateCallbacks} join nothing (a measurement arm). */
-    static final boolean R1511 = !"0".equals(System.getenv("CANDOR_R1511"));
-    static final boolean R1511_DEBUG = System.getenv("CANDOR_R1511_DEBUG") != null;
+    static final boolean R1511 = Env.killSwitchOn("CANDOR_R1511");
+    static final boolean R1511_DEBUG = Env.trace("CANDOR_R1511_DEBUG") != null;
 
     /** SOUNDNESS R1511 — a call that runs a FRAMEWORK body on a PROJECT object is charged the project overrides that
      *  body calls back on its own receiver.
@@ -1471,8 +1471,8 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
     }
 
     /** The kill switch: {@code CANDOR_R1565=0} makes {@link #frameworkDispatchJoin} join nothing (a measurement arm). */
-    static final boolean R1565 = !"0".equals(System.getenv("CANDOR_R1565"));
-    static final boolean R1565_DEBUG = System.getenv("CANDOR_R1565_DEBUG") != null;
+    static final boolean R1565 = Env.killSwitchOn("CANDOR_R1565");
+    static final boolean R1565_DEBUG = Env.trace("CANDOR_R1565_DEBUG") != null;
 
     /** SOUNDNESS R1565/R1569 — a call into a framework member whose body dispatches on an abstraction the consumer can
      *  implement is joined to the consumer's OWN implementers of that member, as a chained row's {@code dispatchesOn}
@@ -1639,8 +1639,8 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
     }
 
     /** The kill switch: {@code CANDOR_R1573=0} makes {@link #inheritedCallbacks} join nothing (a measurement arm). */
-    static final boolean R1573 = !"0".equals(System.getenv("CANDOR_R1573"));
-    static final boolean R1573_DEBUG = System.getenv("CANDOR_R1573_DEBUG") != null;
+    static final boolean R1573 = Env.killSwitchOn("CANDOR_R1573");
+    static final boolean R1573_DEBUG = Env.trace("CANDOR_R1573_DEBUG") != null;
 
     /** SOUNDNESS R1573 — a framework member DISPATCHED on a consumer object (a {@code p<i>:} entry or a D key) that the
      *  object's class INHERITS from a framework class runs that framework body on the object, and the body calls back

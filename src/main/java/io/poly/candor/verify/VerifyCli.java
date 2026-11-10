@@ -1,5 +1,7 @@
 package io.poly.candor.verify;
 
+import io.poly.candor.Env;
+
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
@@ -142,7 +144,7 @@ public final class VerifyCli {
         pb.redirectInput(ProcessBuilder.Redirect.INHERIT);
         pb.redirectError(ProcessBuilder.Redirect.INHERIT);
         pb.redirectOutput(wantJson ? ProcessBuilder.Redirect.DISCARD : ProcessBuilder.Redirect.INHERIT);
-        Map<String, String> env = pb.environment();
+        Map<String, String> env = Env.childEnvironment(pb);
         String prior = env.getOrDefault("JAVA_TOOL_OPTIONS", "");
         String agentOpt = "-javaagent:" + jar + "=" + includeFile;
         env.put("JAVA_TOOL_OPTIONS", agentOpt + (prior.isEmpty() ? "" : " " + prior));
@@ -282,7 +284,7 @@ public final class VerifyCli {
 
     /** The path to THIS running jar (for {@code -javaagent}), or null when running from a classes dir. */
     private static String locateJar() {
-        String env = System.getenv("CANDOR_JAVA_JAR");
+        String env = Env.operator("CANDOR_JAVA_JAR");
         if (env != null && !env.isEmpty() && Files.isRegularFile(Path.of(env))) return env;
         try {
             var src = VerifyCli.class.getProtectionDomain().getCodeSource();

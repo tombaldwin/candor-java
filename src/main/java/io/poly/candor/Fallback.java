@@ -21,8 +21,8 @@ import org.objectweb.asm.tree.analysis.Frame;
 final class Fallback {
     private Fallback() {}
 
-    static final String MODE = System.getenv("CANDOR_SITE_FALLBACK");
-    static final boolean COUNT = System.getenv("CANDOR_SITE_FALLBACK_COUNT") != null;
+    static final String MODE = Env.switchRead("CANDOR_SITE_FALLBACK", v -> v != null);
+    static final boolean COUNT = Env.trace("CANDOR_SITE_FALLBACK_COUNT") != null;
 
     /** The §1.4 class of a hooked member: A-only (format/eq/hash/clone) or bound under both options. */
     static String klass(JdkSites.Hook h) {

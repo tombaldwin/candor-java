@@ -417,7 +417,7 @@ final class Loader {
     /** SOUNDNESS R1336 — {@code CANDOR_R1336=0} reads no call-graph sidecar. That is NOT v0.40.15's row count: it is the
      *  UNANSWERABLE state (Loader#pairDepCallgraphs, Candor#depHierarchyJoin), which resolves a site no further than the
      *  dependency's own union entry — so the switch cannot make a verdict more resolved (SPEC PART 30 P6). */
-    static final boolean R1336 = !"0".equals(System.getenv("CANDOR_R1336"));
+    static final Env.Switch R1336 = Env.killSwitch("CANDOR_R1336");   // lazy: Loader is loaded by `gate --report` too (§3.4 (a))
 
     static Path hierarchySidecarOf(Path f) {
         String n = f.getFileName().toString();
@@ -491,7 +491,7 @@ final class Loader {
             // future one's — costs 0 report entries and 0 effects (the split moves resolution ORDER, and
             // the corpus measurement for that rung was 125 orders / 0 effect changes), so an A/B cannot
             // tell a working reader from a dead one. This count can.
-            if (System.getenv("CANDOR_DEPHIER_DEBUG") != null)
+            if (Env.trace("CANDOR_DEPHIER_DEBUG") != null)
                 System.err.println("DEPHIER load " + f + ": " + ctx().depSupers.size() + " types known, "
                         + ctx().depSplitKnown.size() + " with a known split");
         } catch (Exception e) {
@@ -706,7 +706,47 @@ final class Loader {
         return obj == null || !obj.has("analyzed");
     }
 
+    /** ⟨0.42⟩ SPEC §3.4 (d), SOUNDNESS R1634: package -> the result-moving switches a CHAINED dependency report says its producer ran
+     *  under. A switched producer's absent row is a CLAIM (⟨0.21⟩'s purity claim), unlike ⟨0.24⟩'s judged-nothing report, which makes
+     *  none — so it is disclosed, on stderr once per package and in the verdict's `switchedDependencies`. ADVISORY ONLY: the
+     *  consumer's own run is not switched and cannot judge what a dependency's environment did, so the exit is untouched.
+     *  Per scanning THREAD, like {@link AnalysisState}: `--parallel` scans several targets through one static. */
+    private static final ThreadLocal<java.util.TreeMap<String, java.util.TreeSet<String>>> DEP_SWITCHED =
+            ThreadLocal.withInitial(() -> new java.util.TreeMap<>(Env::byCodePoint));
+
+    /** The chained packages whose reports carry `switches`, ordered by package (code point), names code-point sorted. */
+    static java.util.List<java.util.Map<String, Object>> switchedDependencies() {
+        var out = new ArrayList<java.util.Map<String, Object>>();
+        for (var e : DEP_SWITCHED.get().entrySet()) {
+            var m = new java.util.LinkedHashMap<String, Object>();
+            m.put("package", e.getKey());
+            m.put("switches", new ArrayList<>(e.getValue()));
+            out.add(m);
+        }
+        return out;
+    }
+
+    private static void noteSwitchedDependency(JsonObject obj, Path f) {
+        if (obj == null || !obj.has("switches") || !obj.get("switches").isJsonArray()) return;
+        var names = new java.util.TreeSet<String>(Env::byCodePoint);
+        for (JsonElement x : obj.getAsJsonArray("switches"))
+            if (x.isJsonPrimitive() && x.getAsJsonPrimitive().isString() && !x.getAsString().isEmpty()) names.add(x.getAsString());
+        if (names.isEmpty()) return;
+        // The dependency's name on the wire: the report's singular `package`, else the report FILE's stem. A class-directory report
+        // carries `packages` (every Java package it covers), which names no single dependency and is unbounded.
+        String pkg = obj.has("package") && obj.get("package").isJsonPrimitive() && !obj.get("package").getAsString().isEmpty()
+                ? obj.get("package").getAsString() : f.getFileName().toString().replaceFirst("\\.json$", "");
+        var cur = DEP_SWITCHED.get().computeIfAbsent(pkg, k -> new java.util.TreeSet<>(Env::byCodePoint));
+        int before = cur.size();
+        cur.addAll(names);
+        if (cur.size() > before)
+            System.err.println("candor-java: chained dependency '" + pkg + "' was produced under a set result-moving switch ("
+                    + String.join(", ", cur) + ") — its report is a claim about an altered producer: an absent row there is NOT "
+                    + "evidence of purity (SPEC §3.4 (d)). The gate's exit is unchanged; re-scan that dependency with the variable unset.");
+    }
+
     static void loadCrossDeps(String spec, String ownVersion) {
+        DEP_SWITCHED.get().clear();   // one scan, one answer: a thread that runs several scans must not carry the last one's
         if (spec == null || spec.isBlank()) return;
         for (String tok : spec.split("[\\s:,]+")) {
             if (tok.isBlank()) continue;
@@ -817,6 +857,7 @@ final class Loader {
                     // trust; `depChainedPkgs` = for whom a report was configured.
                     ctx().depChainedPkgs.addAll(reportPackages(obj));
                     ctx().depReportsRead++;   // ⟨0.29⟩ see AnalysisContext.depReportsRead
+                    noteSwitchedDependency(obj, f);
                     if (stale) {
                         System.err.println("candor: CANDOR_DEPS report " + f + " was produced by build '"
                                 + depVer + "', not this one ('" + ownVersion + "') — its effects are"
@@ -1133,7 +1174,7 @@ final class Loader {
     private static void pairDepCallgraphs() {
         List<PendingPair> todo = new ArrayList<>(pendingPairs);
         pendingPairs.clear();
-        if (!R1336) return;
+        if (!R1336.on()) return;
         for (PendingPair pp : todo) {
             Path cg = callgraphSidecarOf(pp.report());
             if (cg == null || !Files.isRegularFile(cg) || pp.ownTypes() == null) continue;

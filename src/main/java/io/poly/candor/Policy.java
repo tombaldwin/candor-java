@@ -416,7 +416,7 @@ final class Policy {
                 gi.edges(), gi.synthetic(), gi.display(), gi.keyOf(), gi.hash());
     }
 
-    static final boolean R682_DEBUG = System.getenv("CANDOR_R682_DEBUG") != null;
+    static final boolean R682_DEBUG = Env.trace("CANDOR_R682_DEBUG") != null;
 
     private static Map<String, TreeSet<String>> copyDeep(Map<String, TreeSet<String>> m) {
         Map<String, TreeSet<String>> out = new HashMap<>();
@@ -601,9 +601,9 @@ final class Policy {
     /** MEASUREMENT ARM ONLY ({@code CANDOR_D1_SEED=0}): the merge carries the reasons but the scan route is not
      *  seeded — the shape the R1327 lane measured unequal (PShape.plain scan 0 / report 1). Kept so the route-
      *  equality guard can be shown to FIRE on the fixture that guards D1. */
-    static final boolean D1_NOSEED = "0".equals(System.getenv("CANDOR_D1_SEED"));
+    static final Env.Switch D1_SEED = Env.killSwitch("CANDOR_D1_SEED");   // lazy: Policy is loaded by every evaluator verb (§3.4 (a)); SET is `=0`, the seed OFF
 
-    static final boolean D1_DEBUG = System.getenv("CANDOR_D1_DEBUG") != null;
+    static final boolean D1_DEBUG = Env.trace("CANDOR_D1_DEBUG") != null;
 
     /** D1 REACH PROBE ({@code CANDOR_D1_DEBUG}): every unit carrying {@code Unknown} whose scan-route class set the
      *  seed WIDENS, with the classes it gains — {@code MERGED} for the merged row itself (what D1 is for),
@@ -646,7 +646,7 @@ final class Policy {
             for (UnknownReason ur : e.getValue()) classes.add(ReasonClass.classify(ur.format()).token());
             if (!classes.isEmpty()) reasonClassDirect.put(e.getKey(), classes);
         }
-        if (entries != null && ReportWriter.D1 && !D1_NOSEED) {
+        if (entries != null && ReportWriter.D1.on() && D1_SEED.on()) {
             for (Effector en : entries) {
                 if (en.interfaceUnion() || en.fn() == null || en.fn().isEmpty() || en.unknownWhy().isEmpty()) continue;
                 TreeSet<String> classes = null;

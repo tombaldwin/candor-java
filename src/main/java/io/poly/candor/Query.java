@@ -321,7 +321,7 @@ public final class Query {
      *  verb and must not pre-empt the verb's own "no report" diagnostic (the real run prints it a moment
      *  later, through {@link #discoverReportLocator}; two copies of the line would read as two failures). */
     static String discoverReportLocatorQuiet() {
-        String override = System.getenv("CANDOR_REPORT");
+        String override = Env.operator("CANDOR_REPORT");
         if (override != null && !override.isEmpty()) return override;
         Path p = Path.of("").toAbsolutePath();
         for (; p != null; p = p.getParent()) {
@@ -795,6 +795,11 @@ public final class Query {
         // travels on the report SET, and reading only the lexicographically-first file would answer flat
         // over a manifest sitting in the sibling.
         ReportRef ref = new ReportRef(reportLocator, report);
+        // ⟨0.42⟩ SPEC §3.4 (c): the advisory verbs that answer `ok` refuse as the gate does, `--strict` or not (see below).
+        if (cmd.equals("whatif") || cmd.equals("fix-gate") || cmd.equals("unverified")) {
+            int refused = refuseAdvisoryUnderSwitches(cmd, loaded);
+            if (refused >= 0) return refused;
+        }
         // ⟨0.28⟩ SPEC §3.1 — the verbs that read per-report SIDECARS (`callers`/`tour`/`whatif`/`fix`/
         // `fix-gate` via loadCallgraph/fixGraph, `unverified` via the envelope's reason channel) take the
         // LOADED SET, not the first member: unioning the entries while anchoring the graph on one report
@@ -955,7 +960,7 @@ public final class Query {
     /** The config's {@code baseline} (or CANDOR_BASELINE), resolved the way {@link #resolvePolicyFallback} resolves the policy;
      *  null when neither names one. Read only to NAME it in a refusal — {@code accepts} never judges against it unasked. */
     static String resolveBaselineFallback() {
-        String env = System.getenv("CANDOR_BASELINE");
+        String env = Env.operator("CANDOR_BASELINE");
         if (env != null && !env.isEmpty()) return env;
         try {
             java.nio.file.Path cfg = Config.discover(java.nio.file.Path.of("."));
@@ -987,7 +992,7 @@ public final class Query {
     }
 
     static String resolvePolicyFallback() {
-        String env = System.getenv("CANDOR_POLICY");
+        String env = Env.operator("CANDOR_POLICY");
         if (env != null) return env;
         try {
             java.nio.file.Path cfg = Config.discover(java.nio.file.Path.of("."));
@@ -3713,6 +3718,15 @@ public final class Query {
         for (String sink : sinks) Candor.writeGateJson(sink, violations, facts, unevaluated);
     }
 
+    /** ⟨0.42⟩ {@link #refuse}'s sibling for cause (e): the same sinks, the refusal document carrying {@code switches}. */
+    private static int refuseUnderSwitches(boolean json, String gateJsonPath, String reason, List<String> switches) {
+        java.util.LinkedHashSet<String> sinks = new java.util.LinkedHashSet<>();
+        if (json) sinks.add("-");
+        if (gateJsonPath != null) sinks.add(gateJsonPath);
+        for (String sink : sinks) Candor.writeRefusedGateJson(sink, reason, List.of(), switches);
+        return 2;
+    }
+
     private static int refuse(boolean json, String gateJsonPath, String reason, List<String[]> unevaluated) {
         // ONE ARTIFACT, ONE DOCUMENT. §3.1 says `--json` IS `--gate-json -`, so `--json --gate-json -`
         // names the SAME sink twice — and writing both put TWO concatenated JSON objects on one stream,
@@ -3928,7 +3942,10 @@ public final class Query {
                      *  report's age cannot license certification — SPEC ⟨0.34⟩ ruled that out explicitly,
                      *  since a pre-⟨0.33⟩ producer's peek was still bounded by SOME policy nobody here can
                      *  see, so refusing is correct either way. */
-                    String spec) {}
+                    String spec,
+                    /** ⟨0.42⟩ SPEC §2 {@code switches} (SOUNDNESS R1634): the result-moving switches the PRODUCER ran under —
+                     *  EMPTY when the key is absent. A gate over a report that carries any REFUSES (§3.3 (e)). */
+                    List<String> switches) {}
 
     /**
      * ⟨0.32⟩ ONE RULE FOR EVERY §2 ENVELOPE FIELD THIS READER TOUCHES: absent takes the default (⟨0.26⟩'s
@@ -3993,6 +4010,7 @@ public final class Query {
         // not impeach a document over a field the refusal logic never reads — it just falls back to the
         // same "cannot answer ⇒ predates" reading an absent key gets.
         String spec = "";
+        List<String> switches = new ArrayList<>();   // ⟨0.42⟩ §2 `switches` — empty when absent
         JsonArray fns = null;
         JsonObject envObj = null;          // the §2 envelope, or null for the legacy v0.1 bare array
         if (root.isJsonObject()) {
@@ -4085,6 +4103,22 @@ public final class Query {
                                 + "reads as a complete one, so it impeaches the document (§2.2)");
                     netPartners = new io.poly.candor.model.Report.NetPartners(
                             envStr(np, "netPartners", "config"), envStrList(np, "netPartners", "hosts"));
+                }
+            }
+            // ⟨0.42⟩ SPEC §2 `switches` (SOUNDNESS R1634): STRICT like every verdict-bearing key here. Non-emptiness is a
+            // REFUSAL trigger (§3.3 (e)), so a present-but-malformed value coerced to "no switches" is the safe-LOOKING
+            // reading that deletes the refusal. ABSENT stays absent (a pre-⟨0.42⟩ producer, or a scan under no switch).
+            if (o.has("switches")) {
+                if (!o.get("switches").isJsonArray())
+                    throw new IllegalStateException(
+                            "`switches` is present but is not an array of names — a verdict-bearing key that cannot be read "
+                            + "impeaches the whole document (§2), and read as empty it would delete the refusal §3.3 (e) owes");
+                for (JsonElement e : o.getAsJsonArray("switches")) {
+                    if (!e.isJsonPrimitive() || !e.getAsJsonPrimitive().isString() || e.getAsString().isEmpty())
+                        throw new IllegalStateException(
+                                "a `switches` member is not a non-empty string — a verdict-bearing key that cannot be read "
+                                + "impeaches the whole document (§2)");
+                    switches.add(e.getAsString());
                 }
             }
             if (o.has("outOfScope") && !o.get("outOfScope").isJsonArray())
@@ -4310,7 +4344,49 @@ public final class Query {
         }
         return new Envelope(analyzed, unanalyzed, uncovered, raw, pkg,
                 Loader.claimsToHaveJudgedNothing(envObj, fns), Loader.hasNoManifest(envObj), outOfScope,
-                netPartners, unpeeked, scannedUnder, anyPeeked, spec);
+                netPartners, unpeeked, scannedUnder, anyPeeked, spec, switches);
+    }
+
+    /** ⟨0.42⟩ SPEC §3.3 (e) / §3.4 (c): the union of the result-moving switches THIS process consulted and the ones the
+     *  report(s) being judged carry, code-point sorted without duplicates. LENIENT by design — it only ever ADDS a refusal: a
+     *  report that does not parse is the gate's `cannot read report` business, and an element that is not a name is not one. */
+    static List<String> switchesOf(List<String> reportPaths) {
+        java.util.TreeSet<String> out = new java.util.TreeSet<>(BY_CODE_POINT);
+        out.addAll(Env.consultedSwitches());
+        for (String p : reportPaths) {
+            try {
+                JsonElement root = JsonParser.parseString(Files.readString(Path.of(p)));
+                if (root.isJsonObject() && root.getAsJsonObject().has("switches")
+                        && root.getAsJsonObject().get("switches").isJsonArray())
+                    for (JsonElement e : root.getAsJsonObject().getAsJsonArray("switches"))
+                        if (e.isJsonPrimitive() && e.getAsJsonPrimitive().isString() && !e.getAsString().isEmpty()) out.add(e.getAsString());
+            } catch (Exception ignored) { /* corrupt: not ours to judge here */ }
+        }
+        return new ArrayList<>(out);
+    }
+
+    /** ⟨0.42⟩ SPEC §3.4 (c): the ADVISORY verbs that answer `ok` (`unverified`, `fix-gate`, `whatif`) refuse, as the gate does, over
+     *  a report whose producer ran under a set switch or in a process that consulted one — exit 2 and the §3.1 refusal document
+     *  whether or not `--strict` is given: a verb that answered over a switched report would accept what the gate refuses, and an
+     *  advisory verb may be less certain than the gate, never more (§3.3.1). `fix`, which answers no `ok`, is not bound.
+     *  @return the exit code to return (2), or -1 when no switch is involved. */
+    static int refuseAdvisoryUnderSwitches(String verb, List<String> reportPaths) {
+        List<String> sw = switchesOf(reportPaths);
+        if (sw.isEmpty()) return -1;
+        String why = Env.switchRefusalReason(sw);
+        System.err.println("candor " + verb + ": " + why);
+        System.out.println(io.poly.candor.model.ReportJson.pretty(refusalDocument(why, sw)));
+        return 2;
+    }
+
+    private static java.util.Map<String, Object> refusalDocument(String reason, List<String> switches) {
+        var d = new java.util.LinkedHashMap<String, Object>();
+        d.put("spec", Candor.SPEC_VERSION);
+        d.put("ok", false);
+        d.put("refused", true);
+        d.put("reason", reason);
+        d.put("switches", switches);
+        return d;
     }
 
     /**
@@ -4607,6 +4683,7 @@ public final class Query {
         boolean unaskedFromCurrentSpec = false;
         Map<String, List<String>> rawWhy = new HashMap<>();
         List<String> judgedNothing = new ArrayList<>();
+        java.util.TreeSet<String> reportSwitches = new java.util.TreeSet<>(BY_CODE_POINT);   // ⟨0.42⟩ union of the gated reports' `switches`
         // ⟨0.28⟩ SPEC §2's THIRD ROW, kept apart from the list above on THIS route too — the note below
         // said such a report "declare[s] `analyzed.count: 0`", and it declares nothing.
         List<String> noManifest = new ArrayList<>();
@@ -4625,6 +4702,7 @@ public final class Query {
                 return refuse(json, gateJsonPath, msg, List.of());
             }
             analyzedCount += env.analyzedCount();
+            reportSwitches.addAll(env.switches());
             unanalyzed.addAll(env.unanalyzed());
             uncovered.addAll(env.uncovered());
             outOfScope.addAll(env.outOfScope());
@@ -4667,6 +4745,19 @@ public final class Query {
             System.err.println("candor gate: locator names " + reportPaths.size()
                     + " reports — gating over all of them as one analysis world (§2): "
                     + String.join(", ", reportPaths));
+        // ⟨0.42⟩ SPEC §3.3 cause (e) / §3.4 (c), SOUNDNESS R1634: A GATE UNDER A SET RESULT-MOVING SWITCH IS UNANSWERABLE. Two
+        // sources, UNIONED: (i) a switch THIS process consulted — a gate that ran no analysis consults none, and an engine MUST
+        // NOT read every switch at start, so `gate --report` in an environment holding a scan-time switch judges a clean report as
+        // it would without it — and (ii) a non-empty `switches` on a report being judged, which a switched scan wrote. Exit 2, the
+        // §3.1 refusal document (no `violations`) carrying the names; a violation does not dominate it (§3.3 (e)).
+        List<String> switched = new ArrayList<>(Env.consultedSwitches());
+        for (String sw : reportSwitches) if (!switched.contains(sw)) switched.add(sw);
+        if (!switched.isEmpty()) {
+            switched.sort(BY_CODE_POINT);
+            String why = Env.switchRefusalReason(switched);
+            System.err.println("candor gate: " + why);
+            return refuseUnderSwitches(json, gateJsonPath, why, switched);
+        }
         Policy.GateInput gi = Policy.gateInputFromReport(fns, rawWhy);
 
         // ⟨0.32⟩ DOES THIS POLICY'S ANSWER DEPEND ON THE CODE THE PRODUCER LEFT UNREAD? — THE ONE PLACE
@@ -4719,6 +4810,17 @@ public final class Query {
             violations = Policy.gate(gi, scoped.triples());
         } finally {
             Candor.diagOut = prior;
+        }
+        // ⟨0.42⟩ …and a switch the evaluation ITSELF consulted (none does today; the check is the rule, not a list) refuses too.
+        {
+            List<String> now = switchesOf(List.of());
+            for (String sw : reportSwitches) if (!now.contains(sw)) now.add(sw);
+            if (!now.isEmpty()) {
+                now.sort(BY_CODE_POINT);
+                String why = Env.switchRefusalReason(now);
+                System.err.println("candor gate: " + why);
+                return refuseUnderSwitches(json, gateJsonPath, why, now);
+            }
         }
         // A REFUSAL is not "no violations": with every unanswerable rule withheld from the evaluation, a
         // zero here means "nothing the gate COULD read fired", which is not a clean bill. Say the refusal

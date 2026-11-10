@@ -13,7 +13,13 @@ import java.util.List;
  * fully-covered report stays byte-identical to a pre-⟨0.15⟩ one.
  */
 public record Report(Provenance candor, List<String> packages, Coverage coverage,
-                     Analyzed analyzed, List<UnanalyzedUnit> unanalyzed,
+                     Analyzed analyzed,
+                     /** ⟨0.42⟩ SPEC §2 {@code switches} (SOUNDNESS R1634): the result-moving switches SET and CONSULTED by the
+                      *  producing run — names only, code-point sorted, no duplicates. EMPTY (key omitted) when none, so a scan
+                      *  under no switch is byte-identical to a pre-rung report. Recorded by the PRODUCER, because a
+                      *  report-reading consumer cannot see the environment the report was produced in. */
+                     List<String> switches,
+                     List<UnanalyzedUnit> unanalyzed,
                      List<ExcludedClass> excluded, List<OutOfScope> outOfScope,
                      ScannedUnder scannedUnder,
                      NetPartners netPartners,

@@ -229,6 +229,15 @@ final class Refresh {
         System.err.println("candor-java: refresh — reused " + reused + " of " + total
                 + " class(es) from " + file);
         if (poisoned) return;
+        // ⟨0.42⟩ SOUNDNESS R1634: A CACHE IS NEVER PRIMED BY A SWITCHED RUN. A delta computed while a result-moving switch was set
+        // and consulted carries the switched answer, and the digest below folds in the engine build, the flags and the chained
+        // dependencies but not the environment — so the next run, with the variable unset, would REPLAY it and publish the switched
+        // rows in a report that names no switch. Read at the point the per-class deltas exist (every read a delta can hold has run).
+        if (!Env.consultedSwitches().isEmpty()) {
+            warn("not stored — this run consulted a result-moving switch (" + String.join(", ", Env.consultedSwitches())
+                    + "), so its per-class results are not the ones an unset environment computes");
+            return;
+        }
         // Nothing was analysed afresh and nothing dropped out, so the file on disk is already exactly
         // what this run would write. On the field case that file is 15 MB, and rewriting it is pure
         // cost on the run the whole feature exists to make fast — the unchanged-tree run.
@@ -582,7 +591,7 @@ final class Refresh {
         Digest(boolean debug) {
             try { md = MessageDigest.getInstance("SHA-256"); }
             catch (Exception e) { throw new IllegalStateException("SHA-256 unavailable", e); }
-            String d = debug ? System.getenv("CANDOR_REFRESH_DEBUG") : null;
+            String d = debug ? Env.trace("CANDOR_REFRESH_DEBUG") : null;
             java.io.Writer w = null;
             if (d != null && !d.isEmpty()) {
                 try { w = Files.newBufferedWriter(Path.of(d)); } catch (Exception ignored) { }
@@ -639,7 +648,7 @@ final class Refresh {
      *  byte-equality comparison structurally cannot see, because on a cold run the misfiled writes still
      *  reach the master and the answer still comes out right. */
     static boolean verifying() {
-        String v = System.getenv("CANDOR_REFRESH_VERIFY");
+        String v = Env.trace("CANDOR_REFRESH_VERIFY");
         return v != null && !v.isEmpty() && !v.equals("0");
     }
 

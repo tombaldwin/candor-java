@@ -56,7 +56,7 @@ import org.objectweb.asm.tree.MethodNode;
 final class CallTargets {
     private CallTargets() {}
 
-    static final boolean DEBUG = System.getenv("CANDOR_CT_DEBUG") != null;
+    static final boolean DEBUG = Env.trace("CANDOR_CT_DEBUG") != null;
 
     /** The spelling a site was written in — decides the past-bound rule (see the class doc), nothing else. */
     enum Spelling {

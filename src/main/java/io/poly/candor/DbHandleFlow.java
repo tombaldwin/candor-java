@@ -177,7 +177,7 @@ final class DbHandleFlow {
         return last.startsWith("exec:") || last.startsWith("bound-exec:") || last.startsWith("callback-exec:");
     }
 
-    static final boolean TRACE = System.getenv("CANDOR_R825_TRACE") != null;
+    static final boolean TRACE = Env.trace("CANDOR_R825_TRACE") != null;
     private static String describe(Object o) {
         if (o instanceof MethodInsnNode m) return "call " + m.owner + "." + m.name + m.desc;
         if (o instanceof FieldInsnNode f) return "field " + f.owner + "." + f.name;

@@ -1,5 +1,7 @@
 package io.poly.candor.verify;
 
+import io.poly.candor.Env;
+
 import java.io.BufferedWriter;
 import java.io.FileWriter;
 import java.io.IOException;
@@ -56,7 +58,7 @@ public final class Trace {
     private static final String[] UNCOVERED = loadUncovered();
 
     private static String[] loadUncovered() {
-        String path = System.getenv("CANDOR_VERIFY_UNCOVERED");
+        String path = Env.operator("CANDOR_VERIFY_UNCOVERED");
         if (path == null || path.isEmpty()) return new String[0];
         try {
             java.util.List<String> out = new java.util.ArrayList<>();
@@ -82,7 +84,7 @@ public final class Trace {
     private static synchronized void openLazily() {
         if (opened) return;
         opened = true;
-        String path = System.getenv("CANDOR_VERIFY_TRACE");
+        String path = Env.operator("CANDOR_VERIFY_TRACE");
         if (path == null || path.isEmpty()) {
             disabled = true;
             return;

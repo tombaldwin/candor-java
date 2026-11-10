@@ -315,6 +315,7 @@ final class ReportWriter {
                 new ArrayList<>(pkgs),
                 coverage,
                 analyzed,
+                Env.consultedSwitches(),    // ⟨0.42⟩ §2 `switches` — read HERE, after every analysis read, before the write (§3.4 (a))
                 unanalyzed,
                 Candor.excludedClasses(),   // ⟨0.29⟩ THE SCOPE — always present, `[]` included
                 ctx().outOfScope,           // ⟨0.29⟩ THE PEEK — null (key omitted) when no policy was set
@@ -591,7 +592,7 @@ final class ReportWriter {
                     if (real == null || !impl.equals(real.fn())) fromOthers.addAll(ie);
                     // D1 (SOUNDNESS R1330/R1338) — …and for a MERGE, every contributor but the claiming body itself,
                     // whose own reasons are already the row's direct ones. See the merge call below.
-                    if ((real == null || (D1 && !impl.equals(real.fn()))) && ie.hasUnknown()) {
+                    if ((real == null || (D1.on() && !impl.equals(real.fn()))) && ie.hasUnknown()) {
                         contributorReasons(impl, reasonClasses.get(), contributed);
                         if (R1239_DEBUG)   // §E1 reach probe: which contributor gave which classes
                             System.err.println("CANDOR_R1239\t" + hash + "\t" + impl + "\t" + reasonClasses.get().get(impl));
@@ -662,12 +663,12 @@ final class ReportWriter {
             if (r917) {
                 inf.add(Effect.UNKNOWN);
                 why = List.of(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner.replace('/', '.') + "." + name));
-                if (System.getenv("CANDOR_R533_DEBUG") != null)
+                if (Env.trace("CANDOR_R533_DEBUG") != null)
                     System.err.println((real != null ? "CANDOR_R917_CLAIMED " : "CANDOR_R917_ZEROUNION ") + hash);
             }
             if (inf.isEmpty() && inv.isEmpty()
                     && (real != null || impls.isEmpty() || !incUnion.isEmpty())) continue;
-            if (inf.isEmpty() && inv.isEmpty() && System.getenv("CANDOR_R533_DEBUG") != null)
+            if (inf.isEmpty() && inv.isEmpty() && Env.trace("CANDOR_R533_DEBUG") != null)
                 System.err.println("CANDOR_R919_PUREUNION " + hash);
             List<String> netClass = List.of();
             if (inf.contains(Effect.NET)) {
@@ -690,7 +691,7 @@ final class ReportWriter {
                 // direct. Policy#gateInputFromScan seeds the scan route's class fixpoint with what is written
                 // here, so the two routes walk the same seeds (R1338). Kill switch: CANDOR_D1=0.
                 List<UnknownReason> mergeWhy = why;
-                if (D1 && !contributed.isEmpty() && inf.hasUnknown()) {
+                if (D1.on() && !contributed.isEmpty() && inf.hasUnknown()) {
                     TreeSet<UnknownReason> all = new TreeSet<>(why);
                     all.addAll(contributed);
                     mergeWhy = new ArrayList<>(all);
@@ -758,10 +759,10 @@ final class ReportWriter {
      * it), or a class no walk can source, contributes {@code dep:<its hash>}, which projects to
      * {@code unresolved}: the catch-all, never a guessed class.
      */
-    static final boolean R1239_DEBUG = System.getenv("CANDOR_R1239_DEBUG") != null;
+    static final boolean R1239_DEBUG = Env.trace("CANDOR_R1239_DEBUG") != null;
     /** D1 (SOUNDNESS R1330/R1338) — a write-time merge carries its contributors' reasons, and the scan route seeds
      *  them. {@code CANDOR_D1=0} restores v0.40.15's merge (effects only, plus a broad merge's own hedge). */
-    static final boolean D1 = !"0".equals(System.getenv("CANDOR_D1"));
+    static final Env.Switch D1 = Env.killSwitch("CANDOR_D1");   // lazy: ReportWriter is loaded by every evaluator verb (§3.4 (a))
 
     /** SOUNDNESS R1307 — R1239's lazy accumulator, deliberately NOT a {@code java.util.Map}. It was an anonymous
      *  {@code AbstractMap} whose {@code get} ran {@code Policy.scanReasonClassAcc()}, which made it a PROJECT implementer

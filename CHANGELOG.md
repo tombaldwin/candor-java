@@ -9,6 +9,27 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **⚠ A gate run under a result-moving environment variable now refuses (exit 2), and the report names the variable (SPEC ⟨0.42⟩
+  §2 `switches`, §3.4, §3.3 cause (e); SOUNDNESS R1634).** Twenty `CANDOR_*` variables change what this engine reports: the kill
+  switches for closed defects (`CANDOR_R1304=0`, `CANDOR_R1565=0`, `CANDOR_D1=0`, …, where `=0` is SET and `=1` or unset is the
+  default), and four measurement modes (`CANDOR_R1201_FLOOR`, `CANDOR_R1217_TOP=cha`, `CANDOR_R1461_WIDE`,
+  `CANDOR_SITE_FALLBACK`). Measured on 0.41.3, `CANDOR_R1304=0` removes the producer row `convlib.ArrayConverter.toString`, every
+  top-level key of the report stays byte-equal, and a chained consumer's `deny Fs app.App.c_call` goes from exit 1 to exit 0.
+  Now: the report carries `"switches": [ "<NAME>", … ]` (names only, code-point sorted, omitted when empty, so a scan under no
+  switch is byte-identical to before) for each switch that was SET and CONSULTED by the run, `spec` is not changed, and a gate
+  evaluated under one — in its own environment, or over a report that carries the key — answers the §3.1 refusal document
+  (`ok: false`, `refused: true`, no `violations`, `switches`, a `reason` that says to unset them) at exit 2. A refused
+  `scan --policy` still writes its report. `gate --report`, `unverified`, `fix-gate` and `whatif` refuse over a report carrying
+  `switches` (`--strict` or not); `fix` is not bound. A chained dependency report that carries `switches` gets a stderr advisory and
+  the verdict gains `switchedDependencies` (ordered by package); the exit is untouched. `gate --report` chains no dependency, so
+  the key cannot appear on that route. **A switch is read where its logic runs, never at process start:** `gate --report` in an
+  environment holding a scan-time switch judges a clean report as it would without it. Every environment read now goes through
+  one class (`Env`); `EnvLintTest` is a javac-AST lint that fails on any `System.getenv` or environment enumeration elsewhere (a
+  literal or computed name, a static initialiser, a method reference, a reflective route), shown failing on 21 seeded spellings
+  and on a shipped file with one read appended. **A cache is never primed by a switched run:** `CANDOR_REFRESH` stored the
+  per-class results of a run that had consulted a switch, and the next run with the variable unset replayed them into a report
+  that named nothing; such a run now stores nothing. No variable is documented; a harness that attributes a change to one fix by
+  switching it off does so on the report route (`--json`), where this is disclosure and nothing refuses.
 - **⚠ A consumer object handed to a framework method is now charged the callback its INHERITED framework body makes
   on it (SOUNDNESS R1573).** commons-validator's `Form.addField(Field f)` runs `f.getKey()`, and `Field.getKey` runs
   `this.generateKey()` → `this.isIndexed()`. A `Cb extends Field` that overrides only `isIndexed()` with an env read

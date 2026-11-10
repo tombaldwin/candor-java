@@ -332,7 +332,7 @@ public final class Config {
      *  MUST be usable — fail-closed), else the nearest {@code .candor/config} walking UP from the target,
      *  else empty. */
     static Config forTarget(Path scanTarget) {
-        String override = System.getenv("CANDOR_CONFIG");
+        String override = Env.operator("CANDOR_CONFIG");
         if (override != null) {
             Path p = Path.of(override);
             if (!Files.isRegularFile(p)) {
@@ -518,14 +518,14 @@ public final class Config {
      *  is the §6.2 gateless-green class. Same absence, opposite meanings; only the SOURCE separates them.
      */
     boolean fromFile(String key, String envVar) {
-        return System.getenv(envVar) == null && values.containsKey(key);
+        return Env.operator(envVar) == null && values.containsKey(key);
     }
 
     /** A value with env-override: the env var if set (one-off override), else the config file's value —
      *  which MAY be the empty string (a bare key line: "enabled with the empty value", the set-but-empty
      *  env analog; for `strict`/`no-ambient` that means the whole unit). Null only when genuinely absent. */
     String value(String key, String envVar) {
-        String env = System.getenv(envVar);
+        String env = Env.operator(envVar);
         if (env != null) return env;
         return values.get(key);
     }
@@ -533,7 +533,7 @@ public final class Config {
     /** A boolean with env-override: the env var PRESENCE means on (env can't express off), else the config
      *  file's truthy value ({@code true}/{@code 1}/{@code yes}, or a bare key with no value). */
     boolean flag(String key, String envVar) {
-        if (System.getenv(envVar) != null) return true;
+        if (Env.operator(envVar) != null) return true;
         if (!values.containsKey(key)) return false;
         String v = values.get(key);
         return v.isEmpty() || v.equalsIgnoreCase("true") || v.equals("1") || v.equalsIgnoreCase("yes");

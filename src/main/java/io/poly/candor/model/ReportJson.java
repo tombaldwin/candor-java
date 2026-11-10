@@ -77,6 +77,10 @@ public final class ReportJson {
             an.put("digest", report.analyzed().digest());
             envelope.put("analyzed", an);
         }
+        // ⟨0.42⟩ SPEC §2 `switches` (SOUNDNESS R1634), beside `analyzed`: the result-moving switches this run SET and
+        // CONSULTED. OMITTED when empty, so a scan under no switch is byte-identical to a pre-rung report. `spec` is NOT
+        // changed (§3.4 (b)): a report that carries this key is not a conforming report of the spec it names.
+        if (report.switches() != null && !report.switches().isEmpty()) envelope.put("switches", report.switches());
         // ⟨0.21⟩ COMPLETENESS MANIFEST (Gap 2): the target's own source candor could NOT analyze (skipped
         // unparseable .class). OMITTED when empty (a complete scan is byte-identical to a pre-rung report),
         // so a MACHINE reading --json sees the incompleteness the stderr warning alone used to hide.

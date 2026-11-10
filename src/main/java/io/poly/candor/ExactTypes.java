@@ -43,7 +43,7 @@ import org.objectweb.asm.tree.analysis.SourceValue;
  */
 final class ExactTypes {
 
-    static final boolean DEBUG = System.getenv("CANDOR_R1205_DEBUG") != null;
+    static final boolean DEBUG = Env.trace("CANDOR_R1205_DEBUG") != null;
 
     /** A producer this analysis cannot follow. */
     static final String TOP = "?";
@@ -56,7 +56,7 @@ final class ExactTypes {
     /** {@code "" + o} and the other JDK string sinks over an {@code Object} operand whose producers are not all known:
      *  {@code floor} (the default: the S5 floor class decides), or {@code cha} — a MEASUREMENT arm that edges every
      *  override in bound, as an explicit {@code o.toString()} does. */
-    static final String SINK_TOP = Optional.ofNullable(System.getenv("CANDOR_R1217_TOP")).orElse("floor");
+    static final String SINK_TOP = Optional.ofNullable(Env.switchRead("CANDOR_R1217_TOP", "cha"::equals)).orElse("floor");
 
     /** A key/value entry built by {@code Map.entry} or an {@code AbstractMap} entry constructor. */
     record Entry(MethodNode mn, Frame<SourceValue>[] fr, SourceValue key, SourceValue value) {}
@@ -157,7 +157,7 @@ final class ExactTypes {
             boolean broad = cha.size() > Rules.CHA_FANOUT_LIMIT && !Cha.isClosedHierarchy(top);
             // SOUNDNESS R1306 — re-entry bodies chaTargets held back (Cha#heldReentry) are weighed by the floor, which
             // discloses only where one carries an effect the caller lacks
-            if (Candor.R1306 && (kind.equals("D") || kind.equals("S")) && !Cha.heldReentry(top, name, desc).isEmpty())
+            if (Candor.R1306.on() && (kind.equals("D") || kind.equals("S")) && !Cha.heldReentry(top, name, desc).isEmpty())
                 floor(caller, top, name, desc, kind.equals("D") ? "S4" : "S5");
             // SOUNDNESS R1509 — the project classes that reach `top` only through a type outside the scan (Cha#
             // crossBoundaryTargets). Decided beside `cha`, never folded into its bound (a widened count would trade the

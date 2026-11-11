@@ -64,6 +64,19 @@ final class EnvLint {
     static final String ENV_FILE = "Env.java";
 
     private static final Set<String> ENV_METHODS = Set.of("getenv", "environment");
+    /** JVM SYSTEM-PROPERTY access (SPEC §3.4 ⟨0.42⟩ "the class binds the effect, not the channel", SOUNDNESS R1645). A property is
+     *  the same ambient input as a variable, delivered by the JVM's option channels. Flagged by method name wherever the name is
+     *  specific to the system-property surface. */
+    private static final Set<String> PROP_ANY = Set.of("getProperties", "setProperties", "setProperty", "clearProperty",
+            "getInputArguments", "getRuntimeMXBean", "getSystemProperties");
+    /** {@code getProperty} is also {@code java.util.Properties}' own accessor (a resource file the engine ships): flagged on a
+     *  {@code System} receiver or an unqualified (statically imported) call. A {@code Properties} built from
+     *  {@code System.getProperties()} is caught at the {@code getProperties} call. */
+    private static final Set<String> PROP_SYSTEM_ONLY = Set.of("getProperty");
+    /** {@code Boolean.getBoolean}, {@code Integer.getInteger}, {@code Long.getLong}: a property read spelled on a box class. */
+    private static final Map<String, String> PROP_BOX = Map.of("getBoolean", "Boolean", "getInteger", "Integer", "getLong", "Long");
+    private static final Set<String> PROP_REFLECTIVE_NAMES = Set.of("getProperty", "getProperties", "setProperty", "getBoolean",
+            "getInteger", "getLong", "getInputArguments");
     private static final Set<String> REFLECTIVE = Set.of("getMethod", "getDeclaredMethod", "findStatic", "findVirtual",
             "forName", "loadClass", "getDeclaredMethods", "getMethods");
 
@@ -92,17 +105,46 @@ final class EnvLint {
                     if (sel instanceof IdentifierTree i) return i.getName().toString();
                     return null;
                 }
+                /** the simple name of the receiver of {@code sel}, or null when unqualified / not a plain name */
+                private String receiverOf(ExpressionTree sel) {
+                    if (!(sel instanceof MemberSelectTree m)) return null;
+                    return nameOf(m.getExpression());
+                }
+                private boolean unqualified(ExpressionTree sel) { return sel instanceof IdentifierTree; }
+                private boolean propertyCall(String name, ExpressionTree sel) {
+                    if (name == null) return false;
+                    if (PROP_ANY.contains(name)) return true;
+                    String r = receiverOf(sel);
+                    if (PROP_SYSTEM_ONLY.contains(name)) return unqualified(sel) || "System".equals(r);
+                    String box = PROP_BOX.get(name);
+                    return box != null && (unqualified(sel) || box.equals(r));
+                }
                 @Override public Void visitMethodInvocation(MethodInvocationTree n, Void p) {
                     String name = nameOf(n.getMethodSelect());
                     if (name != null && ENV_METHODS.contains(name)) hit(n, "calls `" + name + "`");
+                    if (propertyCall(name, n.getMethodSelect())) hit(n, "reads a JVM system property via `" + name + "`");
                     if (name != null && REFLECTIVE.contains(name))
                         for (ExpressionTree a : n.getArguments())
                             if (a instanceof LiteralTree l && l.getValue() instanceof String s && ENV_METHODS.contains(s))
                                 hit(n, "reaches `" + s + "` reflectively");
+                    if (name != null && REFLECTIVE.contains(name))
+                        for (ExpressionTree a : n.getArguments())
+                            if (a instanceof LiteralTree l && l.getValue() instanceof String s && PROP_REFLECTIVE_NAMES.contains(s))
+                                hit(n, "reaches the property reader `" + s + "` reflectively");
+                    // the JDK-own HOST properties are the one named exclusion: `Env.hostProperty` takes a literal that is not `candor.`
+                    if ("hostProperty".equals(name)) {
+                        boolean literal = n.getArguments().size() == 1 && n.getArguments().get(0) instanceof LiteralTree l
+                                && l.getValue() instanceof String s && !s.regionMatches(true, 0, "candor.", 0, 7);
+                        if (!literal) hit(n, "`hostProperty` takes a literal JDK-own name (a computed or candor.* name is a switch)");
+                    }
                     return super.visitMethodInvocation(n, p);
                 }
                 @Override public Void visitMemberReference(MemberReferenceTree n, Void p) {
                     if (ENV_METHODS.contains(n.getName().toString())) hit(n, "references `" + n.getName() + "`");
+                    String mn = n.getName().toString();
+                    if (PROP_ANY.contains(mn) || (PROP_SYSTEM_ONLY.contains(mn) && "System".equals(nameOf(n.getQualifierExpression())))
+                            || (PROP_BOX.containsKey(mn) && PROP_BOX.get(mn).equals(nameOf(n.getQualifierExpression()))))
+                        hit(n, "references the property reader `" + mn + "`");
                     return super.visitMemberReference(n, p);
                 }
                 @Override public Void visitLiteral(LiteralTree n, Void p) {
@@ -148,7 +190,7 @@ final class EnvLint {
                         ExpressionTree sel = n.getMethodSelect();
                         String name = sel instanceof MemberSelectTree m ? m.getIdentifier().toString()
                                 : sel instanceof IdentifierTree i ? i.getName().toString() : null;
-                        if (name != null && Set.of("killSwitch", "killSwitchOn", "optIn", "switchRead").contains(name)
+                        if (name != null && Set.of("killSwitch", "killSwitchOn", "optIn", "switchRead", "propertySwitchRead", "propertyOptIn").contains(name)
                                 && !n.getArguments().isEmpty()) {
                             if (n.getArguments().get(0) instanceof LiteralTree l && l.getValue() instanceof String s) out.put(s, name);
                             else out.put("<non-literal name at " + f.getFileName() + ":" + cu.getLineMap().getLineNumber(

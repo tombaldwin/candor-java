@@ -358,7 +358,7 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
      *  is {@code "buildtime"}/{@code "runtime"} in an image and absent on a normal JVM — read directly so
      *  no graal-sdk dependency is needed. Gates the JDK supertype-index fallback to native only. */
     private static final boolean IN_NATIVE_IMAGE =
-            System.getProperty("org.graalvm.nativeimage.imagecode") != null;
+            Env.hostProperty("org.graalvm.nativeimage.imagecode") != null;
 
     /** The build-time JDK class -> direct super + interfaces index (gzipped resource), loaded once on
      *  first use (lazily, via class-init). Process-global + immutable — it's the constant JDK hierarchy,

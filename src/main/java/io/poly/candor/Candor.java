@@ -1100,7 +1100,7 @@ public class Candor {
                 javax.tools.ToolProvider.getSystemJavaCompiler() == null || scanRootForPeek == null
                         ? null
                         : files -> compileForPeek(files, peekClasspath,
-                                                  Path.of(System.getProperty("java.io.tmpdir")));
+                                                  Path.of(Env.hostProperty("java.io.tmpdir")));
         if (!processorPresent && ctx().scanRoot != null) {
             for (var e : ctx().excluded.entrySet()) {
                 String cls = e.getValue();
@@ -4594,7 +4594,7 @@ public class Candor {
      *  nothing is folded) — takes {@link #virtualDispatch} as before. {@code -Dcandor.r1078=off} restores it. */
     static boolean bridgeSelfForward(AnalysisContext ctx, MethodScan s, MethodInsnNode min) {
         MethodNode mn = s.mn;
-        if ((mn.access & Opcodes.ACC_BRIDGE) == 0 || R1078_OFF) return false;
+        if ((mn.access & Opcodes.ACC_BRIDGE) == 0 || R1078_OFF.set()) return false;
         if (!min.name.equals(mn.name) || min.desc.equals(mn.desc)) return false;
         ClassNode cn = ctx.byName.get(min.owner);
         if (cn == null || !declaresConcrete(cn, min.name, min.desc) || !declaresConcrete(cn, mn.name, mn.desc)) return false;
@@ -4631,7 +4631,7 @@ public class Candor {
     /** {@code CANDOR_R1078_DEBUG} prints each folded bridge call taken by {@link #bridgeSelfForward} (the reach
      *  probe); {@code -Dcandor.r1078=off} restores the ordinary path (the A/B's one-variable arm). */
     static final boolean R1078_DEBUG = Env.trace("CANDOR_R1078_DEBUG") != null;
-    static final boolean R1078_OFF = "off".equals(System.getProperty("candor.r1078"));
+    static final Env.Switch R1078_OFF = Env.propertyOptIn("candor.r1078", "off"::equals);   // lazy: Candor is loaded by every evaluator verb (§3.4 (a))
 
     /** Whether the JVM, invoking {@code (name, bridgeDesc)} on an instance of {@code sub}, selects the bridge
      *  declared in {@code bridgeOwner}: the first project class in {@code sub}'s resolution order that declares

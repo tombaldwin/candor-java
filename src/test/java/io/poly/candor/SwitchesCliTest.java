@@ -64,12 +64,15 @@ class SwitchesCliTest {
     /** Run the CLI with every inherited CANDOR_ variable removed (a switch in the gradle environment would turn the unset arm into a
      *  switched one) and {@code extra} added. */
     private static Run cli(Map<String, String> extra, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of(System.getProperty("java.home") + "/bin/java", "-cp",
-                System.getProperty("java.class.path"), "io.poly.candor.Candor"));
+        List<String> cmd = new ArrayList<>(List.of(System.getProperty("java.home") + "/bin/java"));
+        // a key spelled `-Dname` is a JVM system property on the command line (SOUNDNESS R1645); every other key is an environment variable
+        extra.forEach((k, v) -> { if (k.startsWith("-D")) cmd.add(k + "=" + v); });
+        cmd.addAll(List.of("-cp", System.getProperty("java.class.path"), "io.poly.candor.Candor"));
         cmd.addAll(List.of(args));
         ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.environment().keySet().removeIf(k -> k.startsWith("CANDOR_"));
-        pb.environment().putAll(extra);
+        // an inherited JVM option variable would turn the unset arm into a switched one, as an inherited CANDOR_ variable would
+        pb.environment().keySet().removeIf(k -> k.startsWith("CANDOR_") || List.of("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "JAVA_OPTS").contains(k));
+        extra.forEach((k, v) -> { if (!k.startsWith("-D")) pb.environment().put(k, v); });
         Process p = pb.start();
         // drain both streams concurrently: a full pipe on the one not being read would deadlock the child
         var errBuf = new ByteArrayOutputStream();
@@ -146,6 +149,39 @@ class SwitchesCliTest {
         assertEquals(named.stream().sorted().distinct().toList(), named, "sorted, no duplicates");
     }
 
+    // ── SOUNDNESS R1645: a JVM system property is a switch exactly as a variable is, by whichever route it arrived ─────────────────
+
+    @Test
+    void aPropertyIsNamedByTheNameTheEngineReadsItBy_viaEveryRoute() throws Exception {
+        assertFalse(json(produce(Map.of())).has("switches"), "control: no property set, no key");
+        // frameworkReach is consulted on every scan of this fixture (Cha reads it where the κ table is applied). The two-channel
+        // case, CANDOR_R1461 beside candor.r1461, needs the generic-hedge path and is pinned by conformance PART 109's jp_two.
+        for (Map<String, String> route : List.<Map<String, String>>of(Map.of("-Dcandor.frameworkReach", "off"),
+                Map.of("JAVA_TOOL_OPTIONS", "-Dcandor.frameworkReach=off"), Map.of("JDK_JAVA_OPTIONS", "-Dcandor.frameworkReach=off"),
+                Map.of("_JAVA_OPTIONS", "-Dcandor.frameworkReach=off"))) {
+            assertEquals(List.of("candor.frameworkReach"), strings(json(produce(route)).getAsJsonArray("switches")),
+                    route + ": named as the engine reads it — no -D, no value, the same by every route");
+        }
+        assertFalse(json(produce(Map.of("-Dcandor.frameworkReach", "on"))).has("switches"), "a default-valued property selects the default branch: not SET");
+        assertFalse(json(produce(Map.of("-Dcandor.nonesuch", "off"))).has("switches"),
+                "a property the engine never consults is NOT listed (dumping the properties would bury the one that mattered)");
+        assertFalse(json(produce(Map.of("-Duser.dir", "/tmp", "-Dos.name", "X"))).has("switches"), "a host property is configuration");
+    }
+
+    @Test
+    void aGateUnderASetProperty_refuses_whicheverRouteDeliveredIt() throws Exception {
+        String prod = produce(Map.of());
+        for (Map<String, String> route : List.<Map<String, String>>of(Map.of("-Dcandor.frameworkReach", "off"),
+                Map.of("JAVA_TOOL_OPTIONS", "-Dcandor.frameworkReach=off"))) {
+            Gate g = consume(route, prod);
+            assertEquals(2, g.run().exit(), route + ": " + g.run().err());
+            JsonObject d = json(g.gate());
+            assertTrue(d.get("refused").getAsBoolean(), route.toString());
+            assertEquals(List.of("candor.frameworkReach"), strings(d.getAsJsonArray("switches")));
+            assertTrue(d.get("reason").getAsString().contains("candor.frameworkReach") && d.get("reason").getAsString().contains("Unset"), "" + d.get("reason"));
+        }
+    }
+
     // ── (c)(i) a gate under a set switch refuses ──────────────────────────────────────────────────
 
     @Test
@@ -208,6 +244,7 @@ class SwitchesCliTest {
         Files.writeString(Path.of(pol), "deny Fs\n");
         // every switch java registers, set to the value that selects its non-default branch (SwitchLazinessTest enumerates them from source)
         Map<String, String> all = new HashMap<>(SwitchLazinessTest.everySwitchSet());
+        all.putAll(SwitchLazinessTest.everyPropertySet());   // and every JVM property switch, by -D (R1645)
         Run r = cli(all, "gate", "--report", plain, "--policy", pol, "--gate-json", g);
         assertEquals(1, r.exit(), "gate --report judges a clean report as it would without the variables: " + r.err());
         assertFalse(json(g).has("refused"), "an engine MUST NOT read every switch at process start (§3.4 (a))");
@@ -217,7 +254,8 @@ class SwitchesCliTest {
     void everyOtherEvaluatorVerbAlsoRunsUnchangedWithEverySwitchSet() throws Exception {
         String plain = handWritten("ev", null), pol = work.resolve("deny-fs6.candor").toString();
         Files.writeString(Path.of(pol), "deny Fs\n");
-        Map<String, String> all = SwitchLazinessTest.everySwitchSet();
+        Map<String, String> all = new HashMap<>(SwitchLazinessTest.everySwitchSet());
+        all.putAll(SwitchLazinessTest.everyPropertySet());
         String[][] verbs = {{"where", "Fs", "--report", plain}, {"show", "app.f", "--report", plain}, {"map", "--report", plain},
                 {"blindspots", "--report", plain}, {"unverified", "--report", plain, "--policy", pol},
                 {"fix-gate", "--report", plain, "--policy", pol}, {"whatif", "app.f", "Net", "--report", plain},

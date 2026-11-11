@@ -9,6 +9,20 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **⚠ A gate run under a result-moving JVM system property now refuses (exit 2), and the report names the property (SPEC ⟨0.42⟩
+  §3.4 "the class binds the effect, not the channel"; SOUNDNESS R1645).** `candor.r1078`, `candor.r1461`, `candor.r1461.wide`,
+  `candor.frameworkReach` and `candor.frameworkPure` change what this engine reports, and one `System.getProperty` read cannot tell
+  `java -D…` from `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`, `_JAVA_OPTIONS`, a start script's options or the umbrella's
+  `CANDOR_JAVA_OPTS`. Measured on 0.41.3: `-Dcandor.r1078=off` takes one input from 2,882 functions to 2,889 and
+  `-Dcandor.r1461=off` changes the bytes, neither carrying `switches`. Now each is registered through `Env` (`propertySwitchRead`,
+  and the lazy `propertyOptIn` for the class every verb loads), named as the engine reads it (`candor.r1078`, no `-D`, no value),
+  and refused over by every rule the variables already obey; `CANDOR_R1461` beside `-Dcandor.r1461` names both. All five are
+  registered rather than retired: three are read by the κ-table derivation (`soundness/kappa_table/derive.sh`), and retiring a
+  documented spelling would turn a user's `-D` into a silent no-op. `candor.frameworkPure` supplies a path, but the file REPLACES
+  the engine's own pure table, so it changes how the engine reasons about the same inputs: a measurement arm, in scope. A scan
+  under none of them is byte-identical to before. `EnvLintTest` now also fails on `getProperty`, `Boolean.getBoolean`,
+  `Integer.getInteger`, `Long.getLong`, `getProperties`, `setProperty`, `getInputArguments` and a computed name; the JDK-own host
+  properties (`java.io.tmpdir`, the native-image marker) go through `Env.hostProperty`, which refuses a `candor.` name.
 - **⚠ A consumer class that implements a framework interface is charged the callback that interface's DEFAULT body makes on it
   (SOUNDNESS R1574).** spring 6.1.10's `AutoProxyRegistrar.registerBeanDefinitions(metadata, registry)` calls
   `metadata.getAnnotationTypes()`, a default of `AnnotationMetadata` that calls back `this.getAnnotations()`. A consumer

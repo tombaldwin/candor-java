@@ -58,9 +58,30 @@ public final class Env {
     /** A RESULT-MOVING read. Returns the raw value; records {@code name} when {@code isSet} says the value selects a
      *  branch other than the one an unset variable selects. */
     public static String switchRead(String name, Predicate<String> isSet) {
-        String v = System.getenv(name);
+        return recorded(name, isSet, System.getenv(name));
+    }
+
+    /** A RESULT-MOVING read of a JVM SYSTEM PROPERTY (SPEC §3.4 ⟨0.42⟩ "THE CLASS BINDS THE EFFECT, NOT THE CHANNEL",
+     *  SOUNDNESS R1645). The same rule as {@link #switchRead}: a property reaches the JVM by the command line,
+     *  {@code JAVA_TOOL_OPTIONS}, {@code JDK_JAVA_OPTIONS}, {@code _JAVA_OPTIONS} or a start script's options, and one
+     *  {@code System.getProperty} cannot tell them apart. Recorded under {@code name} as the engine reads it
+     *  ({@code candor.r1078}), no {@code -D}, never the value. */
+    public static String propertySwitchRead(String name, Predicate<String> isSet) {
+        return recorded(name, isSet, System.getProperty(name));
+    }
+
+    private static String recorded(String name, Predicate<String> isSet, String v) {
         if (isSet.test(v)) CONSULTED.add(name);
         return v;
+    }
+
+    /** A JDK-OWN property that DESCRIBES THE HOST ({@code java.io.tmpdir}, {@code org.graalvm.nativeimage.imagecode}):
+     *  configuration, out of scope (§3.4: "a property that … describes the host"). Excluded BY NAME: a {@code candor.}
+     *  name is the engine's own and can only be a switch or an operator input, so this refuses one loudly. */
+    public static String hostProperty(String name) {
+        if (name.regionMatches(true, 0, "candor.", 0, 7))
+            throw new IllegalArgumentException("hostProperty is for JDK-own properties; " + name + " is the engine's: use propertySwitchRead");
+        return System.getProperty(name);
     }
 
     /** A default-ON kill switch read now: {@code =0} is SET. {@code CANDOR_Rnnnn=1}, or unset, is the default. For a
@@ -93,7 +114,7 @@ public final class Env {
     /** The refusal's {@code reason} (§3.3 (e); §3.1: a refusal always says why): names every switch and says to unset them. */
     public static String switchRefusalReason(java.util.List<String> names) {
         return "a result-moving switch is set: " + String.join(", ", names) + " — the answer depends on an environment "
-                + "variable that selects which logic ran, so the gate cannot say whether the code passes (SPEC §3.4). "
+                + "variable or JVM system property (however it was delivered: -D, JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS) that selects which logic ran, so the gate cannot say whether the code passes (SPEC §3.4). "
                 + "Unset " + (names.size() == 1 ? "it" : "them") + " and re-run.";
     }
 
@@ -107,11 +128,13 @@ public final class Env {
     public static final class Switch {
         private final String name;
         private final Predicate<String> isSet;
+        private final boolean property;
         private volatile boolean read, set;
 
-        private Switch(String name, Predicate<String> isSet) {
+        private Switch(String name, Predicate<String> isSet, boolean property) {
             this.name = name;
             this.isSet = isSet;
+            this.property = property;
         }
 
         /** Does the value select the non-default branch? Reads the variable the first time it is asked. */
@@ -119,7 +142,7 @@ public final class Env {
             if (!read) {
                 synchronized (this) {
                     if (!read) {
-                        set = isSet.test(switchRead(name, isSet));
+                        set = isSet.test(property ? propertySwitchRead(name, isSet) : switchRead(name, isSet));
                         read = true;
                     }
                 }
@@ -135,11 +158,16 @@ public final class Env {
 
     /** A default-ON kill switch read lazily: {@code =0} is SET. */
     public static Switch killSwitch(String name) {
-        return new Switch(name, "0"::equals);
+        return new Switch(name, "0"::equals, false);
     }
 
     /** An opt-in mode read lazily: SET when {@code isSet} accepts the value. */
     public static Switch optIn(String name, Predicate<String> isSet) {
-        return new Switch(name, isSet);
+        return new Switch(name, isSet, false);
+    }
+
+    /** A JVM-system-property switch read lazily, for a class the evaluator verbs also load (R1645). */
+    public static Switch propertyOptIn(String name, Predicate<String> isSet) {
+        return new Switch(name, isSet, true);
     }
 }

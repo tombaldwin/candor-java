@@ -61,6 +61,30 @@ class EnvLintTest {
                 "class A { Object f() throws Exception { return java.lang.invoke.MethodHandles.lookup().findStatic(System.class, \"getenv\", null); } }");
         SEEDED.put("the JDK's private environment class",
                 "class A { Object f() throws Exception { return Class.forName(\"java.lang.ProcessEnvironment\"); } }");
+        // SOUNDNESS R1645 — a JVM SYSTEM PROPERTY is the same ambient input (SPEC §3.4 ⟨0.42⟩: the class binds the effect, not the channel)
+        SEEDED.put("property: getProperty(String)", "class A { String v = System.getProperty(\"candor.x\"); }");
+        SEEDED.put("property: getProperty(String,String)", "class A { String v = System.getProperty(\"candor.x\", \"d\"); }");
+        SEEDED.put("property: static initialiser", "class A { static final boolean R = \"off\".equals(System.getProperty(\"candor.r1\")); }");
+        SEEDED.put("property: Boolean.getBoolean", "class A { boolean v = Boolean.getBoolean(\"candor.x\"); }");
+        SEEDED.put("property: Integer.getInteger", "class A { Integer v = Integer.getInteger(\"candor.x\"); }");
+        SEEDED.put("property: Long.getLong", "class A { Long v = Long.getLong(\"candor.x\", 3L); }");
+        SEEDED.put("property: whole set", "class A { Object v = System.getProperties(); }");
+        SEEDED.put("property: whole set, enumerated", "class A { void f() { for (var k : System.getProperties().keySet()) {} } }");
+        SEEDED.put("property: set from inside the process", "class A { void f() { System.setProperty(\"candor.r1078\", \"off\"); } }");
+        SEEDED.put("property: cleared", "class A { void f() { System.clearProperty(\"candor.r1078\"); } }");
+        SEEDED.put("property: computed name", "class A { String f(String r) { return System.getProperty(\"candor.\" + r); } }");
+        SEEDED.put("property: fully qualified", "class A { String v = java.lang.System.getProperty(\"candor.x\"); }");
+        SEEDED.put("property: static import", "import static java.lang.System.getProperty;\nclass A { String v = getProperty(\"candor.x\"); }");
+        SEEDED.put("property: method reference", "class A { java.util.function.Function<String,String> f = System::getProperty; }");
+        SEEDED.put("property: in a lambda", "class A { Runnable r = () -> System.getProperty(\"candor.x\"); }");
+        SEEDED.put("property: in an inner class", "class A { class B { String v = System.getProperty(\"candor.x\"); } }");
+        SEEDED.put("property: via a Properties copy", "class A { String v = new java.util.Properties(System.getProperties()).getProperty(\"candor.x\"); }");
+        SEEDED.put("property: the launcher's own arguments",
+                "class A { Object v = java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments(); }");
+        SEEDED.put("property: reflective getProperty",
+                "class A { Object f() throws Exception { return System.class.getMethod(\"getProperty\", String.class); } }");
+        SEEDED.put("property: hostProperty with a candor.* name", "class A { String v = Env.hostProperty(\"candor.r1078\"); }");
+        SEEDED.put("property: hostProperty with a computed name", "class A { String f(String n) { return Env.hostProperty(n); } }");
     }
 
     @Test
@@ -69,7 +93,7 @@ class EnvLintTest {
             List<EnvLint.Hit> hits = EnvLint.findEnvAccess(e.getValue(), "Seeded.java");
             assertFalse(hits.isEmpty(), "the lint did NOT fire on a seeded read — `" + e.getKey() + "`:\n" + e.getValue());
         }
-        assertTrue(SEEDED.size() >= 20, "the seed set shrank — this is the calibration of the lint, do not thin it");
+        assertTrue(SEEDED.size() >= 41, "the seed set shrank — this is the calibration of the lint, do not thin it");
     }
 
     @Test
@@ -82,6 +106,13 @@ class EnvLintTest {
         assertTrue(EnvLint.findEnvAccess("class C { /** System.getenv(\"X\") — discussed, not called */ int x; // System.getenv()\n }", "C.java").isEmpty());
         // routing through Env is the sanctioned spelling
         assertTrue(EnvLint.findEnvAccess("class C { boolean v = Env.killSwitchOn(\"CANDOR_R1\"); String t = Env.trace(\"CANDOR_X_DEBUG\"); }", "C.java").isEmpty());
+        // a Properties object the engine reads from a resource it ships is not the system's; the sanctioned property spellings are not flagged
+        assertTrue(EnvLint.findEnvAccess("class C { String v(java.util.Properties p) { return p.getProperty(\"version\", \"x\"); } }", "C.java").isEmpty(),
+                "java.util.Properties.getProperty on a resource is not a system-property read");
+        assertTrue(EnvLint.findEnvAccess("class C { boolean v = \"off\".equals(Env.propertySwitchRead(\"candor.r1\", \"off\"::equals)); "
+                + "Env.Switch s = Env.propertyOptIn(\"candor.r2\", \"off\"::equals); String t = Env.hostProperty(\"java.io.tmpdir\"); }", "C.java").isEmpty());
+        assertTrue(EnvLint.findEnvAccess("class C { long f(Object u) { return u.getLong(1L); } java.util.function.LongUnaryOperator g(Reader u) { return u::getLong; } }", "C.java").isEmpty(),
+                "an instance accessor that happens to be called getLong is not Long.getLong");
         // the unrelated words
         assertTrue(EnvLint.findEnvAccess("class C { int environmentCount; String getenvLike() { return \"\"; } }", "C.java").isEmpty());
         // and Env itself is the one file allowed to read
@@ -98,13 +129,15 @@ class EnvLintTest {
             assertEquals(List.of(), EnvLint.findEnvAccess(clean, rel), "the shipped " + rel + " must be clean before the seed");
             String dirty = clean + "\nclass LintSeed { static final boolean S = System.getenv(\"CANDOR_NEW_SWITCH\") != null; }\n";
             assertEquals(1, EnvLint.findEnvAccess(dirty, rel).size(), "one appended read in " + rel + " must be exactly one hit");
+            String dirtyProp = clean + "\nclass LintSeed { static final boolean S = \"off\".equals(System.getProperty(\"candor.new\")); }\n";
+            assertEquals(1, EnvLint.findEnvAccess(dirtyProp, rel).size(), "one appended PROPERTY read in " + rel + " must be exactly one hit");
         }
     }
 
     @Test
     void theShippedTreeReadsTheEnvironmentOnlyThroughEnv() throws Exception {
         List<EnvLint.Hit> bad = EnvLint.lintTree(Path.of("src/main/java"));
-        assertTrue(bad.isEmpty(), "environment access outside Env.java — route it through Env.killSwitch/optIn/switchRead (a "
+        assertTrue(bad.isEmpty(), "environment or system-property access outside Env.java — route it through Env.killSwitch/optIn/switchRead/propertySwitchRead/propertyOptIn (a "
                 + "result-moving switch), Env.trace (stderr only) or Env.operator (a documented input):\n"
                 + String.join("\n", bad.stream().map(EnvLint.Hit::toString).toList()));
         assertTrue(EnvLint.shippedFiles(Path.of("src/main/java")).size() > 20, "the lint walked almost nothing — a vacuous pass");

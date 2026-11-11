@@ -38,12 +38,36 @@ class SwitchLazinessTest {
         });
         Map<String, String> out = new TreeMap<>();
         for (var e : found.entrySet()) {
+            if (e.getValue().startsWith("property")) continue;   // a JVM property switch: see everyPropertySet
             boolean kill = e.getValue().startsWith("killSwitch");
             String v = kill ? "0" : OPT_IN_SET.get(e.getKey());
             assertTrue(v != null, "switch " + e.getKey() + " (" + e.getValue() + ") has no SET value here — add it to OPT_IN_SET");
             out.put(e.getKey(), v);
         }
         return out;
+    }
+
+    /** The value that SELECTS the non-default branch of each JVM-property switch (SOUNDNESS R1645), keyed {@code -D<name>} for the CLI harness. */
+    private static final Map<String, String> PROPERTY_SET = Map.of(
+            "candor.r1078", "off", "candor.r1461", "off", "candor.r1461.wide", "on", "candor.frameworkReach", "off",
+            "candor.frameworkPure", "/dev/null");   // a PATH: any value is SET, and a gate that never ran the logic must never read it
+
+    /** Every registered JVM-property switch, each set. Enumerated FROM SOURCE like the variables, so a new property fails here until it is given a value. */
+    static Map<String, String> everyPropertySet() throws Exception {
+        Map<String, String> out = new TreeMap<>();
+        for (var e : EnvLint.registeredSwitches(Path.of("src/main/java")).entrySet()) {
+            if (!e.getValue().startsWith("property")) continue;
+            String v = PROPERTY_SET.get(e.getKey());
+            assertTrue(v != null, "property switch " + e.getKey() + " has no SET value here — add it to PROPERTY_SET");
+            out.put("-D" + e.getKey(), v);
+        }
+        return out;
+    }
+
+    @Test
+    void thePropertySwitchesAreEnumeratedFromSource() throws Exception {
+        assertEquals(5, everyPropertySet().size(), "the five candor.* properties SOUNDNESS R1645 measured: " + everyPropertySet().keySet());
+        for (String k : PROPERTY_SET.keySet()) assertTrue(everyPropertySet().containsKey("-D" + k), "stale PROPERTY_SET row " + k);
     }
 
     @Test

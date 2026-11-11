@@ -42,7 +42,7 @@ final class FrameworkReach {
     static final String RESOURCE = "/candor/framework-reach.tsv";
 
     /** The generator's switch. Read once; never set by a user-facing option. */
-    static final boolean DISABLED = "off".equals(System.getProperty("candor.frameworkReach"));
+    static final boolean DISABLED = "off".equals(Env.propertySwitchRead("candor.frameworkReach", "off"::equals));
 
     private static volatile Map<String, List<Effect>> table;
 
@@ -102,7 +102,7 @@ final class FrameworkReach {
     private static final java.util.Set<String> PURE = new java.util.HashSet<>();
     /** The generator's input while it scans the framework jars with the table off: the P list it computed from the
      *  bytecode just before (derive.sh step 1b). Never set by a user-facing option. */
-    static final String PURE_OVERRIDE = System.getProperty("candor.frameworkPure");
+    static final String PURE_OVERRIDE = Env.propertySwitchRead("candor.frameworkPure", v -> v != null);
     private static volatile java.util.Set<String> pureOverride;
 
     /** Whether the call {@code internalOwner.name+desc} resolves, in every surveyed artefact, to a body that does

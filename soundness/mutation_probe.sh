@@ -250,12 +250,16 @@ patch_for() {
     # ⟨2026-10-19⟩ re-anchored (R1205): the Object-protocol members now take their CHA edges after the loop
     # (ExactTypes#decide); every other dispatch keeps this line, now the `else` of that split. The mutant still
     # removes the CHA edges the fuzzer's chains need.
+    # ⟨2026-11-11⟩ re-anchored (R1461, 7f04ab8): the `else` now adds the CHA targets through
+    # hedgeIncompatible(), which turns a generic-incompatible JDK-owned edge into a disclosed Unknown. The
+    # mutant still drops every CHA edge that branch links.
     apply_patch \
 '            } else {
-                ctx.edges.get(id).addAll(targets);
+                ctx.edges.get(id).addAll(hedgeIncompatible(ctx, s, min, owner, chaOwner, targets, effect, springTyped,
+                        false));
             }' \
 '            } else {
-                // MUTANT: ctx.edges.get(id).addAll(targets);
+                // MUTANT: ctx.edges.get(id).addAll(hedgeIncompatible(ctx, s, min, owner, chaOwner, targets, effect, springTyped, false));
             }' ;;
   cb_unknown)
     # ⟨2026-08-29⟩ re-anchored: same P7 de-indentation (16/32-space continuation → 12/20).

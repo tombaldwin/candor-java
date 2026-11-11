@@ -734,6 +734,10 @@ public class FrameworkReachGen {
     // ── SOUNDNESS R1511 — A TEMPLATE METHOD CALLS BACK AN OVERRIDE ON ITS OWN RECEIVER ─────────────────────────────────
     /** key (a subclassable surveyed class . member) -> the overridable members its body runs on {@code this}. */
     static final TreeMap<String, TreeSet<String>> TEMPLATE = new TreeMap<>();
+    /** SOUNDNESS R1574 -- the same, for a surveyed INTERFACE's default bodies (Y lines). Kept apart from {@link #TEMPLATE}
+     *  so a class's walk up its H line (which reaches an interface when the superclass is Object) reads exactly what it
+     *  read before: a T line never stands in for a Y line or the reverse. */
+    static final TreeMap<String, TreeSet<String>> ITEMPLATE = new TreeMap<>();
     static final Map<Integer, List<Object[]>> THIS_CALLS = new HashMap<>();
 
     /** SOUNDNESS R1511 -- the members a consumer subclass of {@code cls} can override that the body(ies) {@code roots}
@@ -759,17 +763,12 @@ public class FrameworkReachGen {
      *  and a T line names its number; (3) each member string is written once, as a numbered M line. Uncompressed the
      *  lines were 28 MB on the surveyed jars. */
     static List<String> templateLines() {
-        Map<String, Set<String>> walk = new HashMap<>();
-        TreeMap<String, Set<String>> emit = new TreeMap<>();
-        for (String k : TEMPLATE.keySet()) {
-            int p = k.indexOf('('), dot = k.lastIndexOf('.', p);
-            String c = k.substring(0, dot), sig = k.substring(dot + 1);
-            Set<String> mine = TEMPLATE.get(k);
-            if (!mine.equals(inheritedTemplate(c, sig, walk, emit))) emit.put(k, mine);
-        }
+        TreeMap<String, Set<String>> emit = emitted(TEMPLATE), iemit = emitted(ITEMPLATE);
+        List<Set<String>> all = new ArrayList<>(emit.values());
+        all.addAll(iemit.values());
         // (3) every member string is written once, as a numbered M line, and a list names members by number
         TreeMap<String, Integer> mids = new TreeMap<>();
-        for (Set<String> l : emit.values())
+        for (Set<String> l : all)
             for (String e : l) {
                 int gt = e.indexOf('>');
                 if (gt < 0) mids.putIfAbsent(e.substring(e.indexOf(':') + 1), 0);
@@ -779,7 +778,7 @@ public class FrameworkReachGen {
         for (Map.Entry<String, Integer> e : mids.entrySet()) e.setValue(mn++);
         Map<Set<String>, String> enc = new HashMap<>();
         TreeMap<String, Integer> ids = new TreeMap<>();
-        for (Set<String> l : emit.values()) {
+        for (Set<String> l : all) {
             String x = enc.get(l);
             if (x == null) {
                 List<String> es = new ArrayList<>();
@@ -799,27 +798,44 @@ public class FrameworkReachGen {
         for (Map.Entry<String, Integer> e : mids.entrySet()) out.add("M\t" + e.getValue() + "\t" + e.getKey());
         for (Map.Entry<String, Integer> e : ids.entrySet()) out.add("L\t" + e.getValue() + "\t" + e.getKey());
         for (Map.Entry<String, Set<String>> e : emit.entrySet()) out.add("T\t" + e.getKey() + "\t" + ids.get(enc.get(e.getValue())));
+        for (Map.Entry<String, Set<String>> e : iemit.entrySet()) out.add("Y\t" + e.getKey() + "\t" + ids.get(enc.get(e.getValue())));
         return out;
+    }
+
+    /** The keys of {@code src} whose list differs from what the consumer's walk reads one H step up, over {@code src}
+     *  alone (compression (1) above, per line kind). */
+    static TreeMap<String, Set<String>> emitted(TreeMap<String, TreeSet<String>> src) {
+        Map<String, Set<String>> walk = new HashMap<>();
+        TreeMap<String, Set<String>> emit = new TreeMap<>();
+        for (String k : src.keySet()) {
+            int p = k.indexOf('('), dot = k.lastIndexOf('.', p);
+            String c = k.substring(0, dot), sig = k.substring(dot + 1);
+            Set<String> mine = src.get(k);
+            if (!mine.equals(inheritedTemplate(src, c, sig, walk, emit))) emit.put(k, mine);
+        }
+        return emit;
     }
 
     /** What the consumer's walk reads for {@code sig} starting one H step above {@code c}, given the lines decided so far
      *  (decided supertypes-first by the recursion, so the answer never depends on key order). */
-    static Set<String> inheritedTemplate(String c, String sig, Map<String, Set<String>> walk, TreeMap<String, Set<String>> emit) {
+    static Set<String> inheritedTemplate(TreeMap<String, TreeSet<String>> src, String c, String sig, Map<String, Set<String>> walk,
+            TreeMap<String, Set<String>> emit) {
         LinkedHashSet<String> h = hierarchy().get(c);
         if (h == null || h.isEmpty()) return Set.of();
-        return readTemplate(h.iterator().next(), sig, walk, emit, new HashSet<>());
+        return readTemplate(src, h.iterator().next(), sig, walk, emit, new HashSet<>());
     }
 
-    static Set<String> readTemplate(String c, String sig, Map<String, Set<String>> walk, TreeMap<String, Set<String>> emit, Set<String> seen) {
+    static Set<String> readTemplate(TreeMap<String, TreeSet<String>> src, String c, String sig, Map<String, Set<String>> walk,
+            TreeMap<String, Set<String>> emit, Set<String> seen) {
         String k = c + "." + sig;
         Set<String> memo = walk.get(k);
         if (memo != null) return memo;
         if (!seen.add(c)) return Set.of();
         Set<String> r;
-        Set<String> mine = TEMPLATE.get(k);
+        Set<String> mine = src.get(k);
         Set<String> up = Set.of();
         LinkedHashSet<String> h = hierarchy().get(c);
-        if (h != null && !h.isEmpty()) up = readTemplate(h.iterator().next(), sig, walk, emit, seen);
+        if (h != null && !h.isEmpty()) up = readTemplate(src, h.iterator().next(), sig, walk, emit, seen);
         if (mine != null && !mine.equals(up)) { emit.put(k, mine); r = mine; }
         else r = up;
         walk.put(k, r);
@@ -1219,9 +1235,13 @@ public class FrameworkReachGen {
                     MethodNode decl = nodeMethod.get(tg.get(0));
                     boolean callable = (decl.access & (Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED)) != 0;
                     if (!callable || name.equals("<clinit>")) continue;
-                    // SOUNDNESS R1511 — the overridable members this body runs on its own receiver (T lines)
-                    if (framework && (cn.access & (Opcodes.ACC_FINAL | Opcodes.ACC_INTERFACE)) == 0 && (decl.access & Opcodes.ACC_STATIC) == 0)
-                        TEMPLATE.computeIfAbsent(cn.name + "." + sig, k -> new TreeSet<>()).addAll(selfDispatch(j, cn.name, tg));
+                    // SOUNDNESS R1511 — the overridable members this body runs on its own receiver (T lines). An INTERFACE
+                    // gets them too, as Y lines (SOUNDNESS R1574): `tg` is non-empty for it only where the member resolves
+                    // to a DEFAULT body, and a consumer class implementing the interface directly runs that body on itself
+                    // — spring's `AnnotationMetadata.getAnnotationTypes()` calls back `this.getAnnotations()`.
+                    if (framework && (cn.access & Opcodes.ACC_FINAL) == 0 && (decl.access & Opcodes.ACC_STATIC) == 0)
+                        ((cn.access & Opcodes.ACC_INTERFACE) != 0 ? ITEMPLATE : TEMPLATE)
+                                .computeIfAbsent(cn.name + "." + sig, k -> new TreeSet<>()).addAll(selfDispatch(j, cn.name, tg));
                     LinkedHashSet<Integer> rs = new LinkedHashSet<>(tg);
                     if ((decl.access & Opcodes.ACC_STATIC) != 0 || name.equals("<init>")) rs.addAll(clinits(j, cn.name));
                     int declared = 0, declaredLost = 0;
@@ -1346,7 +1366,9 @@ public class FrameworkReachGen {
             hb.append("#     `via>member` (reached through the body of `via`, an overridable member; empty for the called member's own),\n");
             hb.append("#     or `p<i>:owner.member` (dispatched on the called body's i-th parameter).\n");
             hb.append("#     Written only where it differs from what the walk up the H lines' first entries reads. See Cha#templateCallbacks.\n");
-            hb.append("# L = a numbered list of T entries, members named by M number; M = a numbered member (R1511).\n");
+            hb.append("# Y = the same for a member of a surveyed INTERFACE whose DEFAULT body a consumer class implementing it runs;\n");
+            hb.append("#     walked over Y lines alone, so a T and a Y line never answer for each other (R1574). See Cha#inheritedFrameworkInterfaces.\n");
+            hb.append("# L = a numbered list of T/Y entries, members named by M number; M = a numbered member (R1511).\n");
             hb.append("# D = a member whose body, closed over what it runs (the scan's own `calls`), dispatches on an abstraction a\n");
             hb.append("#     CONSUMER can implement -- a receiver it can supply (a field, an element, a wrapped argument); the number of\n");
             hb.append("#     the E line listing those members follows. E = a numbered list of K numbers; K = a numbered dispatched member\n");

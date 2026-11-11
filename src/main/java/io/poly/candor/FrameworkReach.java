@@ -233,6 +233,8 @@ final class FrameworkReach {
 
     // ── SOUNDNESS R1511 — A FRAMEWORK BODY THAT CALLS BACK ITS OWN RECEIVER'S OVERRIDES ─────────────────────────────
     private static final Map<String, String> TEMPLATE = new HashMap<>();
+    /** SOUNDNESS R1574 — the Y lines: an interface DEFAULT body's T list, in the same L/M numbering, walked apart. */
+    private static final Map<String, String> ITEMPLATE = new HashMap<>();
     private static final Map<String, String> TEMPLATE_RAW = new HashMap<>(), TEMPLATE_MEMBERS = new HashMap<>();
     private static final Map<String, List<String>> TEMPLATE_LISTS = new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -266,12 +268,22 @@ final class FrameworkReach {
      *  only where it differs from the inherited one, so the lookup walks up the H lines' FIRST entries (the
      *  superclass) to the first class that has one — the same walk FrameworkReachGen#templateLines suppressed by. */
     static List<String> templateMembers(String internalOwner, String name, String desc) {
+        return templateMembers(internalOwner, name, desc, false);
+    }
+
+    /** SOUNDNESS R1574 — {@link #templateMembers(String, String, String)} over the Y lines when {@code iface}: the
+     *  members the DEFAULT body a consumer class implementing interface {@code internalOwner} inherits for
+     *  {@code name+desc} runs on its own receiver (FrameworkReachGen#ITEMPLATE). The walk is the same, up the H lines'
+     *  first entries (an interface's first superinterface), over the Y lines alone, so neither kind answers for the
+     *  other. Empty when the owner is not a surveyed interface with a default for the member. */
+    static List<String> templateMembers(String internalOwner, String name, String desc, boolean iface) {
         if (DISABLED) return List.of();
         if (hedge == null) loadHedge();
+        Map<String, String> src = iface ? ITEMPLATE : TEMPLATE;
         String sig = "." + name + desc;
         java.util.Set<String> seen = new java.util.HashSet<>();
         for (String c = internalOwner; c != null && seen.add(c); ) {
-            String id = TEMPLATE.get(c + sig);
+            String id = src.get(c + sig);
             if (id != null) return templateList(id);
             List<String> up = SUPERS.get(c);
             c = up == null || up.isEmpty() ? null : up.get(0);
@@ -344,10 +356,11 @@ final class FrameworkReach {
                         if (t2 <= 0) throw new IllegalStateException("candor: " + HEDGE_RESOURCE + " bad line: " + line);
                         SUPERS.put(v.substring(0, t2), List.of(v.substring(t2 + 1).split(",")));
                     }
-                    case "T", "L", "M" -> { // SOUNDNESS R1511: T key <TAB> list number; L number <TAB> entries; M number <TAB> member
+                    case "T", "Y", "L", "M" -> { // SOUNDNESS R1511: T key <TAB> list number; L number <TAB> entries; M number <TAB> member
+                        // (R1574: Y is a T line for an interface's default body)
                         int t2 = v.indexOf('\t');
                         if (t2 <= 0) throw new IllegalStateException("candor: " + HEDGE_RESOURCE + " bad line: " + line);
-                        (kind.equals("T") ? TEMPLATE : kind.equals("L") ? TEMPLATE_RAW : TEMPLATE_MEMBERS)
+                        (kind.equals("T") ? TEMPLATE : kind.equals("Y") ? ITEMPLATE : kind.equals("L") ? TEMPLATE_RAW : TEMPLATE_MEMBERS)
                                 .put(v.substring(0, t2), v.substring(t2 + 1));
                     }
                     case "D", "E", "K" -> { // SOUNDNESS R1565/R1569: D member <TAB> list; E list <TAB> K numbers; K number <TAB> member

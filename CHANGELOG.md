@@ -9,6 +9,16 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **⚠ A consumer class that implements a framework interface is charged the callback that interface's DEFAULT body makes on it
+  (SOUNDNESS R1574).** spring 6.1.10's `AutoProxyRegistrar.registerBeanDefinitions(metadata, registry)` calls
+  `metadata.getAnnotationTypes()`, a default of `AnnotationMetadata` that calls back `this.getAnnotations()`. A consumer
+  `Cb implements AnnotationMetadata` overriding only `getAnnotations()` with an env read (EXECUTED, one read) read `['Log']`,
+  and `deny Env` exited 0: the R1573 join asked only the class's framework SUPERCLASS (`Object`), and the framework table
+  had no callback lines for interfaces. The table now carries them as a separate `Y` kind (2,512 lines; every `T` line
+  decodes identically), and the direct, parameter (`p<i>:`) and dispatch-key (`D`) joins and `I.super.m()` ask the
+  interfaces a project class implements through project types, unioned with the superclass and priced apart from existing
+  edges, so it only adds. `deny Env` 0 -> 1 on six executed spring fixtures; unique-named pure twins and an own-override
+  control stay 0. Kill switch `CANDOR_R1574=0`.
 - **⚠ A gate run under a result-moving environment variable now refuses (exit 2), and the report names the variable (SPEC ⟨0.42⟩
   §2 `switches`, §3.4, §3.3 cause (e); SOUNDNESS R1634).** Twenty `CANDOR_*` variables change what this engine reports: the kill
   switches for closed defects (`CANDOR_R1304=0`, `CANDOR_R1565=0`, `CANDOR_D1=0`, …, where `=0` is SET and `=1` or unset is the

@@ -210,6 +210,29 @@ The precision of the closure, each rule measured before it was made and checked 
 Closing over this generator's own edges plus R1096's override union was measured too: the lists grew to 40 MB.
 Residual: a CONSUMER class that extends a framework class and implements a framework interface the class does not, whose
 inherited body an interface default reaches on `this` -- the receiver bound sees only surveyed classes combining the two.
+The `Y` lines below close the case where the consumer class implements the interface and the default calls back a member
+the consumer overrides; what stays open is a default whose `this`-call the consumer does NOT override and its framework
+SUPERCLASS implements (the `Y` walk resolves it inside the interface, where it is abstract). No surveyed class combines the
+two with a default (SOUNDNESS R1574's census: 580 such triples, 0 with a default).
+
+## An interface default that calls back the consumer, and the `Y` lines (SOUNDNESS R1574)
+
+R1511's `T` lines are written for subclassable CLASSES, and the consumer asks them only under a project class's nearest
+framework superclass. A consumer class that implements a framework INTERFACE itself runs that interface's DEFAULT bodies,
+and those call back on `this` too: spring's `AnnotationMetadata.getAnnotationTypes()` runs `this.getAnnotations()`, so a
+`Cb implements AnnotationMetadata` overriding only `getAnnotations()` with an env read, handed to
+`AutoProxyRegistrar.registerBeanDefinitions` (which calls `getAnnotationTypes()` on it -- a `p0:` entry), read the env
+(EXECUTED, one read) while the report said `['Log']` and `deny Env` exited 0.
+
+`Y` lines are the `T` lines of a surveyed interface's members that resolve to a default body: same `selfDispatch`, same
+`L`/`M` lists, same compression -- but walked over `Y` lines ALONE, up the interface's first superinterface. They are a
+separate kind, not interface keys among the `T` lines, because a class whose superclass is `Object` has an interface as the
+first entry of its `H` line: a `T` walk from it would have started reading an interface's list for a member the class
+itself declares. Kept apart, every `T` line and every `T` walk is what it was (checked: the decoded `T` lines are identical
+before and after; the change added 2,512 `Y` lines and their lists). `Cha#inheritedFrameworkInterfaces` names the framework
+interfaces a project class implements through project types; the direct join, the `p<i>:` join and the `D`-key join ask
+their `Y` lines beside the superclass's `T` lines, unioned and priced apart from the existing edges (R1573's `inh`), and
+`I.super.m()` asks interface `I`'s. `CANDOR_R1574=0` switches the interface half off.
 `E` lines are
 the distinct lists (by `K` number), `K` lines the dispatched members; a `D` line is written only where it differs from
 what the walk up the `H` lines reads, as for `T`. `Cha#frameworkDispatchJoin` edges the consumer's implementers of each

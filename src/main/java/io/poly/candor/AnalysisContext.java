@@ -199,6 +199,8 @@ final class AnalysisContext {
      *  because one D key recurs at every call site (measured: a 1s scan took 7s without them). */
     Map<String, List<String>> inheritedCallbackMemo = new HashMap<>();
     Map<String, List<String>> inheritedDispatchMemo = new HashMap<>();
+    /** SOUNDNESS R1574 — Cha#inheritedFrameworkOwners per project class: same purity, same reason. */
+    Map<String, List<String>> inheritedOwnersMemo = new HashMap<>();
     /** SOUNDNESS R131 — memo for {@link Candor#externalSupertypeEffects}: the effects an EXTERNAL owner
      *  inherits from a CLASSIFIER-MODELLED supertype, keyed {@code owner \t name+desc}. A pure function of
      *  the classifier's rules and the (fixed) external hierarchy, exactly like {@code chaTargetsCache},
@@ -522,6 +524,7 @@ final class AnalysisContext {
         transSupersCache = master.transSupersCache;         chaTargetsCache = master.chaTargetsCache;
         crossBoundaryIndex = master.crossBoundaryIndex;     crossBoundaryCache = master.crossBoundaryCache;   // R1509
         inheritedCallbackMemo = master.inheritedCallbackMemo; inheritedDispatchMemo = master.inheritedDispatchMemo; // R1573
+        inheritedOwnersMemo = master.inheritedOwnersMemo;                                                         // R1574
         annoMetaCache = master.annoMetaCache;               sealedClosedMemo = master.sealedClosedMemo;
         sealedUnseenMemo = master.sealedUnseenMemo;         externalSupersCache = master.externalSupersCache;
         resolutionOrderCache = master.resolutionOrderCache; depTransWhyMemo = master.depTransWhyMemo;
@@ -638,7 +641,7 @@ final class AnalysisContext {
             "depTransDispatchMemo",
             "extSuperEffectMemo", "depUpWalkMemo", "depFrontierMemo",
             "provFramesCache", "depOwnersBySig", "literalFixpointMemo",
-            "inheritedCallbackMemo", "inheritedDispatchMemo");
+            "inheritedCallbackMemo", "inheritedDispatchMemo", "inheritedOwnersMemo");
 
     /** Sizes of the shared inputs, for {@link #assertNoInputGrowth}.
      *

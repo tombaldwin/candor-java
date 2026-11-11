@@ -49,8 +49,9 @@ class SwitchLazinessTest {
     @Test
     void theEnumerationIsRealAndComplete() throws Exception {
         Map<String, String> all = everySwitchSet();
-        // the census (candor-handoff/r1634/env-classified.tsv) counted 20 result-moving java variables
-        assertEquals(20, all.size(), "the registered switches are not the census's 20: " + all.keySet());
+        // the census (candor-handoff/r1634/env-classified.tsv) counted 20 result-moving java variables; SOUNDNESS R1574
+        // added CANDOR_R1574 (a kill switch, like R1573's)
+        assertEquals(21, all.size(), "the registered switches are not the census's 20 + CANDOR_R1574: " + all.keySet());
         for (String known : new String[]{"CANDOR_R1304", "CANDOR_R1565", "CANDOR_D1", "CANDOR_D1_SEED", "CANDOR_R1336", "CANDOR_SITE_FALLBACK"})
             assertTrue(all.containsKey(known), known + " is missing from the source enumeration — the AST walk has a hole: " + all.keySet());
         // and the opt-in table has no entry for a switch that is gone (a stale row would hide a rename)

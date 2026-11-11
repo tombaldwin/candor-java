@@ -1419,6 +1419,11 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
             if (f == null) return;
             for (String p : c.subtypeIndex.getOrDefault(s.cls.name, List.of())) templateBodies(c, p, f, name, desc, bodies, trace);
             templateArgBodies(c, s, min, f, bodies, inh, trace);
+            if (R1574 && min.itf) {
+                // SOUNDNESS R1574: `I.super.m()` runs interface I's DEFAULT body on this (the Y lines), priced as `inh`
+                for (String p : c.subtypeIndex.getOrDefault(s.cls.name, List.of())) templateBodies(c, p, f, name, desc, inh, trace, true);
+                templateArgBodies(c, s, min, f, inh, inh, trace, true);
+            }
         } else {
             if (init) return;
             Set<String> ps = new LinkedHashSet<>(), keys = new LinkedHashSet<>();
@@ -1427,11 +1432,16 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
                 ps.addAll(c.subtypeIndex.getOrDefault(min.owner, List.of()));
                 ps.addAll(crossBoundarySubtypes(c, min.owner));
             }
+            Set<String> ikeys = new LinkedHashSet<>();
             for (String p : ps) {
                 if (projectBodyOf(c, p, name, desc) != null) continue;      // it runs its own body: the scan's CHA has it
                 String f = firstFrameworkSuper(c, p);
                 if (f != null) { templateBodies(c, p, f, name, desc, bodies, trace); keys.add(f); }
+                // SOUNDNESS R1574: a framework interface's DEFAULT the class may inherit instead. Priced with R1573's
+                // `inh`, apart from `bodies`, so it only adds and never turns their edges into a disclosure.
+                for (String i : inheritedFrameworkInterfaces(c, p)) { templateBodies(c, p, i, name, desc, inh, trace, true); ikeys.add(i); }
             }
+            for (String i : ikeys) templateArgBodies(c, s, min, i, inh, inh, trace, true);
             // the parameter entries of the body the call runs: under the declared owner when that is a framework class
             // (the receiver may be a framework object), else under its nearest framework superclass, and under each
             // project receiver's own (above)
@@ -1566,6 +1576,12 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
      *  the project bodies {@code p} runs for each member the table says that body calls back on {@code this}. */
     private static void templateBodies(AnalysisContext c, String p, String f, String name, String desc, Set<String> out,
             List<String> trace) {
+        templateBodies(c, p, f, name, desc, out, trace, false);
+    }
+
+    /** {@code iface}: {@code f} is a framework INTERFACE and the body is its default (the Y lines, SOUNDNESS R1574). */
+    private static void templateBodies(AnalysisContext c, String p, String f, String name, String desc, Set<String> out,
+            List<String> trace, boolean iface) {
         ClassNode pn = c.byName.get(p);
         if (pn == null || (pn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT)) != 0) return;
         if (FrameworkReach.jdkOwned(f) || languageRuntimeOwned(f)) return;
@@ -1573,7 +1589,7 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         // NOT walked through (p's override runs, not the framework body whose callbacks follow it); one p inherits is
         // walked, because its framework body runs on p and calls back in turn.
         Map<String, List<String>> byVia = new HashMap<>();
-        for (String e : FrameworkReach.templateMembers(f, name, desc)) {
+        for (String e : FrameworkReach.templateMembers(f, name, desc, iface)) {
             int gt = e.indexOf('>');
             if (gt < 0 || e.indexOf(':') >= 0 && e.indexOf(':') < gt) continue;      // a parameter entry: templateArgBodies
             byVia.computeIfAbsent(e.substring(0, gt), k -> new ArrayList<>()).add(e.substring(gt + 1));
@@ -1588,6 +1604,7 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
                 if (b == null) { if (walked.add(m)) q.add(m); continue; }
                 out.add(b);
                 if (trace != null) trace.add(p + "\t" + f + "\t" + m + "\t" + b);
+                if (iface && R1574_DEBUG) System.err.println("R1574E\t" + p + "\t" + f + "." + name + desc + "\t" + m + "\t" + b);
             }
         }
     }
@@ -1600,10 +1617,16 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
      *  when that is a project class). The receiver's own class plays no part: the argument's override runs. */
     private static void templateArgBodies(AnalysisContext c, MethodScan s, MethodInsnNode min, String f, Set<String> out,
             Set<String> inh, List<String> trace) {
+        templateArgBodies(c, s, min, f, out, inh, trace, false);
+    }
+
+    /** {@code iface}: {@code f} is a framework INTERFACE whose default the call runs (the Y lines, SOUNDNESS R1574). */
+    private static void templateArgBodies(AnalysisContext c, MethodScan s, MethodInsnNode min, String f, Set<String> out,
+            Set<String> inh, List<String> trace, boolean iface) {
         if (FrameworkReach.jdkOwned(f) || languageRuntimeOwned(f)) return;
         Type[] args = Type.getArgumentTypes(min.desc);
         org.objectweb.asm.tree.analysis.Frame<ProvValue> fr = provFrameAt(s, min);
-        for (String e : FrameworkReach.templateMembers(f, min.name, min.desc)) {
+        for (String e : FrameworkReach.templateMembers(f, min.name, min.desc, iface)) {
             int colon = e.indexOf(':'), paren = e.indexOf('(');
             if (colon < 2 || e.charAt(0) != 'p' || paren < colon || e.indexOf('>') >= 0 && e.indexOf('>') < colon) continue;
             int i;
@@ -1634,6 +1657,7 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
                 }
                 out.add(b);
                 if (trace != null) trace.add(p + "\t" + f + "\t" + e + "\t" + b);
+                if (iface && R1574_DEBUG) System.err.println("R1574E\t" + p + "\t" + f + "." + min.name + min.desc + "\t" + e + "\t" + b);
             }
         }
     }
@@ -1658,14 +1682,54 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         List<String> got = c.inheritedCallbackMemo.get(k);
         if (got == null) {
             Set<String> g = new LinkedHashSet<>();
-            String f = projectBodyOf(c, p, name, desc) != null ? null : firstFrameworkSuper(c, p);
+            boolean own = projectBodyOf(c, p, name, desc) != null;
+            String f = own ? null : firstFrameworkSuper(c, p);
             if (f != null) templateBodies(c, p, f, name, desc, g, trace);
+            // SOUNDNESS R1574: or a framework interface's DEFAULT body, for a class implementing that interface itself
+            if (!own) for (String i : inheritedFrameworkInterfaces(c, p)) templateBodies(c, p, i, name, desc, g, trace, true);
             got = List.copyOf(g);
             c.inheritedCallbackMemo.put(k, got);
         }
         if (R1573_DEBUG) for (String b : got)
-            System.err.println("R1573E\t" + s.id + "\t" + p + "\t" + firstFrameworkSuper(c, p) + "." + name + desc + "\t" + b);
+            System.err.println("R1573E\t" + s.id + "\t" + p + "\t" + firstFrameworkSuper(c, p) + "+" + inheritedFrameworkInterfaces(c, p)
+                    + "." + name + desc + "\t" + b);
         out.addAll(got);
+    }
+
+    /** The kill switch: {@code CANDOR_R1574=0} makes {@link #inheritedFrameworkInterfaces} return nothing. */
+    static final boolean R1574 = Env.killSwitchOn("CANDOR_R1574");
+    static final boolean R1574_DEBUG = Env.trace("CANDOR_R1574_DEBUG") != null;
+
+    /** SOUNDNESS R1574 — the framework INTERFACES whose default bodies a concrete project class {@code p} can inherit
+     *  beside its nearest framework superclass ({@link #firstFrameworkSuper}): every one it implements through project
+     *  types (its project superclass chain and project superinterfaces), whose DEFAULT methods it runs when nothing in
+     *  the class chain declares the member. Their lists are the table's Y lines (FrameworkReach#templateMembers with
+     *  {@code iface}). spring's {@code AnnotationMetadata.getAnnotationTypes()} is a default that
+     *  calls back {@code this.getAnnotations()}: a {@code Cb implements AnnotationMetadata} overriding only
+     *  {@code getAnnotations()} with an env read (EXECUTED, one read) handed to {@code AutoProxyRegistrar} read pure,
+     *  because only the superclass was asked and {@code Cb}'s is {@code Object}. A framework interface reached through
+     *  the framework superclass is not listed: that class's own T lines already cover the defaults it inherits.
+     *  Unioned, as {@link #frameworkDispatchJoin} unions the superclass's and the interfaces' D keys: which body wins is
+     *  decided by bodies this scan cannot see, and each list only adds. Memoized per class. */
+    private static List<String> inheritedFrameworkInterfaces(AnalysisContext c, String p) {
+        if (!R1574) return List.of();
+        List<String> got = c.inheritedOwnersMemo.get(p);
+        if (got != null) return got;
+        List<String> out = new ArrayList<>();
+        ArrayDeque<String> q = new ArrayDeque<>();
+        Set<String> seen = new HashSet<>();
+        for (String t = p; t != null && c.byName.containsKey(t); t = c.byName.get(t).superName)
+            q.addAll(c.byName.get(t).interfaces);
+        while (!q.isEmpty()) {
+            String i = q.poll();
+            if (!seen.add(i)) continue;
+            ClassNode in = c.byName.get(i);
+            if (in != null) { q.addAll(in.interfaces); continue; }       // a project interface: walk up
+            if (!FrameworkReach.jdkOwned(i) && !languageRuntimeOwned(i)) out.add(i);
+        }
+        got = List.copyOf(out);
+        c.inheritedOwnersMemo.put(p, got);
+        return got;
     }
 
     /** The first non-project class up {@code p}'s superclass chain (the one whose bodies {@code p} inherits), or null

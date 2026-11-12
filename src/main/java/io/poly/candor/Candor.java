@@ -5827,6 +5827,7 @@ public class Candor {
                     objectOperands(s, min, only);   // SOUNDNESS R1217
                 }
             }
+            elementOperands(s, min);   // SOUNDNESS R1705
             // SOUNDNESS R1305 — a JDK Throwable constructor that stringifies its cause (`new RuntimeException(e)` runs
             // `e.toString()`): the same re-entry as a string sink, at exactly the argument the derived table names
             // SOUNDNESS R1306 — printStackTrace prints every throwable in the receiver's CAUSE and SUPPRESSED chain
@@ -5949,6 +5950,87 @@ public class Candor {
             boolean onParam = s.provFrames[0] != null && paramIndexOf(s.mn, v, s.provFrames[0]) >= 0;
             ExactTypes.record(s.id, s.mn, insn, idx, "java/lang/Object", C_TOSTRING, "()Ljava/lang/String;", onParam ? "Q" : "S");
         }
+    }
+
+    /** SOUNDNESS R1705 — A JDK BODY THAT STRINGIFIES THE ELEMENTS OF AN ARRAY ARGUMENT RUNS EACH ELEMENT'S {@code toString}.
+     *  {@code "%s".formatted(o)}, {@code MessageFormat.format("{0}", o)}, {@code ps.printf("%s", o)},
+     *  {@code new Formatter().format("%s", o)}, {@code Arrays.toString(new Object[]{o})}: the operand travels inside a
+     *  varargs pack, so no argument of the call is {@code o}, and only {@code String.format} had a route
+     *  ({@link #reentryFormatVarargs}). Every other such call read ABSENT over an effectful {@code toString} — with an exact
+     *  {@code new} producer in the same body, and in pub 0.41.3 and main alike (executed: {@code javaagent-r1705/fx},
+     *  q.Arr). The derived JDK site table already names these lines ({@code N[] toString}); this reads them.
+     *
+     *  <p>Each value STORED into the pack (an {@link #packStores AASTORE} into an array whose every producer is an
+     *  {@code ANEWARRAY} in this body) is decided exactly as a {@code String.format} operand is: its declared type by the
+     *  in-scan re-entry, a value known only as {@code Object} by its producers ({@link ExactTypes}, floor S5) — except this
+     *  body's own parameter, which is its CALLERS' to decide ({@code Q}; {@link ArgContract#site} records the contract), as
+     *  for {@code String.valueOf(p)}. An array that is not a local pack (a field, a parameter) is {@link ElementFlow}'s.
+     *  {@code String.format} keeps its own route. {@code CANDOR_R1705=0} restores the old reading (a measurement arm). */
+    static void elementOperands(MethodScan s, MethodInsnNode min) {
+        if (!R1705.on() || s.provFrames == null) return;
+        int[] slots = elemToStringSlots(min.owner, min.name, min.desc);
+        if (slots.length == 0) return;
+        if (R1705_DEBUG) System.err.println("R1705SITE\t" + s.id + "\t" + min.owner + "." + min.name + min.desc);
+        Frame<SourceValue>[] sf = srcFrames(s);
+        if (sf == null) return;
+        for (int j : slots)
+            for (AbstractInsnNode st : packStores(s.mn, sf, min, j)) {
+                Frame<ProvValue> pf = s.provFrames[s.mn.instructions.indexOf(st)];
+                if (pf == null || pf.getStackSize() < 1) continue;
+                ProvValue v = pf.getStack(pf.getStackSize() - 1);
+                if (v == null || v.nullConst) continue;
+                reentryEdge(s.id, v, C_TOSTRING);
+                if (v.declType == null && v.base != null && v.base.isReference()) {
+                    boolean onParam = s.provFrames[0] != null && paramIndexOf(s.mn, v, s.provFrames[0]) >= 0;
+                    ExactTypes.record(s.id, s.mn, st, pf.getStackSize() - 1, "java/lang/Object", C_TOSTRING,
+                            "()Ljava/lang/String;", onParam ? "Q" : "S");
+                }
+            }
+    }
+    static final boolean R1705_DEBUG = Env.trace("CANDOR_R1705_DEBUG") != null;
+    static final Env.Switch R1705 = Env.killSwitch("CANDOR_R1705");   // lazy: Candor is the main class, so every verb loads it (§3.4 (a))
+
+    /** SOUNDNESS R1705 — the object-array arguments whose ELEMENTS a call stringifies: the JDK site table's
+     *  {@code N[] toString} lines, and the varargs array of a parameterized-logging call on a logger owner
+     *  ({@code LOG.info("{} {} {}", a, b, c)} — the HikariCP vein of R16/{@link #toStringSinkArgs}, in the form a third
+     *  argument compiles to: one {@code Object[]}; executed, slf4j 2.0.13, every element's toString ran). Empty for
+     *  {@code String.format}, which keeps its own route ({@link #reentryFormatVarargs}). */
+    static int[] elemToStringSlots(String owner, String name, String desc) {
+        if (owner.equals("java/lang/String") && name.equals("format")) return NO_ARGS;
+        if (JdkSites.isJdk(owner)) return JdkSites.elemArgsHooking(owner, name, desc, "toString()Ljava/lang/String;");
+        if (!LOG_LEVEL_NAMES.contains(name) || !desc.contains("[Ljava/lang/Object;") || !isLoggerOwner(owner)) return NO_ARGS;
+        Type[] at = Type.getArgumentTypes(desc);
+        int n = 0;
+        int[] out = new int[at.length];
+        for (int i = 0; i < at.length; i++) if (at[i].getDescriptor().equals("[Ljava/lang/Object;")) out[n++] = i;
+        return Arrays.copyOf(out, n);
+    }
+
+    static boolean isStringFormat(MethodInsnNode min) {
+        return min.owner.equals("java/lang/String") && min.name.equals("format");
+    }
+
+    /** SOUNDNESS R1705 — the {@code AASTORE}s that fill argument {@code j} of {@code min} when that argument is a LOCAL
+     *  pack: every producer of it, through locals, {@code DUP} and {@code CHECKCAST} ({@link #dbRoots}), is an
+     *  {@code ANEWARRAY} of this body. A store counts when every producer of ITS array reference is one of those. Empty
+     *  when the array came from anywhere else (a field, a parameter, a call), which this does not decide. */
+    static List<AbstractInsnNode> packStores(MethodNode mn, Frame<SourceValue>[] sf, MethodInsnNode min, int j) {
+        int ci = mn.instructions.indexOf(min);
+        Frame<SourceValue> f = ci >= 0 && ci < sf.length ? sf[ci] : null;
+        if (f == null) return List.of();
+        int idx = argValueIndex(f.getStackSize(), Type.getArgumentTypes(min.desc), j);
+        if (idx < 0) return List.of();
+        Set<Object> arrays = dbRoots(sf, mn.instructions, f.getStack(idx));
+        if (arrays.isEmpty()) return List.of();
+        for (Object r : arrays) if (!(r instanceof AbstractInsnNode a) || a.getOpcode() != Opcodes.ANEWARRAY) return List.of();
+        List<AbstractInsnNode> out = new ArrayList<>();
+        for (int i = 0; i < mn.instructions.size(); i++) {
+            AbstractInsnNode in = mn.instructions.get(i);
+            if (in.getOpcode() != Opcodes.AASTORE || sf[i] == null || sf[i].getStackSize() < 3) continue;
+            Set<Object> into = dbRoots(sf, mn.instructions, sf[i].getStack(sf[i].getStackSize() - 3));
+            if (!into.isEmpty() && arrays.containsAll(into)) out.add(in);
+        }
+        return out;
     }
 
     /** SOUNDNESS R1305 — the arguments a JDK {@code Throwable} constructor runs {@code toString()} on

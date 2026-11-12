@@ -205,6 +205,22 @@ final class JdkSites {
     }
     private static final int[] NO_INTS = new int[0];
 
+    /** SOUNDNESS R1705 — the OBJECT-ARRAY argument indexes whose ELEMENTS the JDK body of {@code owner.name+desc} runs
+     *  {@code member} on ({@code Arrays.toString(a)}, {@code "%s".formatted(o)}, {@code MessageFormat.format(p, o)},
+     *  {@code ps.printf(f, o)}: the table's {@code N[] toString} lines), in ascending order; empty otherwise. */
+    static int[] elemArgsHooking(String owner, String name, String desc, String member) {
+        Entry e = isJdk(owner) ? at(owner, name, desc) : null;
+        if (e == null) return NO_INTS;
+        org.objectweb.asm.Type[] at = org.objectweb.asm.Type.getArgumentTypes(desc);
+        TreeSet<Integer> s = new TreeSet<>();
+        for (Hook h : e.hooks())
+            if (h.slot() >= 0 && h.elem() && h.member().equals(member) && h.slot() < at.length
+                    && at[h.slot()].getSort() == org.objectweb.asm.Type.ARRAY && at[h.slot()].getDimensions() == 1
+                    && at[h.slot()].getElementType().getSort() == org.objectweb.asm.Type.OBJECT)
+                s.add(h.slot());
+        return s.stream().mapToInt(Integer::intValue).toArray();
+    }
+
     // ------------------------------------------------------------------------------------------- ARGUMENT hooks
     /** The Object-protocol members whose argument re-entry the protocol sinks decide (Candor#contractReentry's
      *  toString/equals/hashCode/compareTo tables and ElementFlow, with their container and allocation evidence). */

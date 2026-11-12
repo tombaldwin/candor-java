@@ -162,7 +162,11 @@ final class ArgContract {
                 if (p >= 0) direct(c, s.id, p, TOSTRING, min);
             }
         }
-        // SOUNDNESS R1305 — …or to a JDK Throwable constructor that stringifies it (`new RuntimeException(cause)`)
+        // SOUNDNESS R1705 — …or packs it into a varargs array whose ELEMENTS the JDK body stringifies, hashes or compares
+        // (`"%s".formatted(p)`, `MessageFormat.format("{0}", p)`, `Objects.hash(p)`, `Arrays.toString(new Object[]{p})`):
+        // the derived table's `N[] <member>` lines, over the local pack's stores (Candor#packStores). String.format keeps
+        // its own reading (its operand is decided in the body, R1217's S5).
+        if (Candor.R1705.on()) elementContracts(c, s, min, f0);
         for (int j : Candor.throwableCtorStringified(min)) {
             int p = Candor.paramIndexOf(s.mn, Candor.callArg(f, min, j), f0);
             if (p >= 0) direct(c, s.id, p, TOSTRING, min);
@@ -252,6 +256,33 @@ final class ArgContract {
             for (String n : callees)
                 c.argContractSites.computeIfAbsent(s.id, k -> new TreeSet<>())
                         .add(n + "\t" + j + "\t" + t + "\t" + flag);
+        }
+    }
+
+    /** SOUNDNESS R1705 — {@link #site}'s element half: this body's own parameter stored into a local varargs pack that a
+     *  JDK body runs {@code toString}/{@code hashCode}/{@code equals} on, element-wise, is that member's contract on the
+     *  parameter — its callers are charged by what they pass, as for {@code String.valueOf(p)}. {@code toString} wherever
+     *  the derived table names it on the elements; {@code hashCode}/{@code equals} only at the sites that run them on
+     *  every element ({@link ElementFlow#hashesElements}). */
+    private static void elementContracts(AnalysisContext c, Candor.MethodScan s, MethodInsnNode min, Frame<ProvValue> f0) {
+        String[][] members = {{"toString()Ljava/lang/String;", TOSTRING}, {"hashCode()I", HASHCODE},
+                {"equals(Ljava/lang/Object;)Z", EQUALS}};
+        org.objectweb.asm.tree.analysis.Frame<org.objectweb.asm.tree.analysis.SourceValue>[] sf = null;
+        for (String[] m : members) {
+            // hashing and equality only where the JDK body runs them on every element — a formatter's `N[] hashCode`
+            // line is its `%h` conversion, which a `%s` never reaches (executed: no hashCode ran)
+            if (!m[1].equals(TOSTRING) && !ElementFlow.hashesElements(min.owner, min.name, min.desc)) continue;
+            int[] slots = m[1].equals(TOSTRING) ? Candor.elemToStringSlots(min.owner, min.name, min.desc)
+                    : JdkSites.elemArgsHooking(min.owner, min.name, min.desc, m[0]);
+            if (slots.length == 0) continue;
+            if (sf == null && (sf = Candor.srcFrames(s)) == null) return;
+            for (int j : slots)
+                for (AbstractInsnNode st : Candor.packStores(s.mn, sf, min, j)) {
+                    Frame<ProvValue> pf = s.provFrames[s.mn.instructions.indexOf(st)];
+                    if (pf == null || pf.getStackSize() < 1) continue;
+                    int p = Candor.paramIndexOf(s.mn, pf.getStack(pf.getStackSize() - 1), f0);
+                    if (p >= 0) direct(c, s.id, p, m[1], min);
+                }
         }
     }
 

@@ -1203,6 +1203,10 @@ final class ElementFlow {
                     || m.owner.equals("java/util/Arrays") || m.owner.equals("java/util/stream/Stream")
                     || m.owner.equals("java/util/Objects") && (m.name.equals("hash") || m.name.equals("equals")
                         || m.name.equals("hashCode")))) return true;   // R1203
+        if (Candor.R1705.on())
+            for (AbstractInsnNode in : mn.instructions)
+                if (in instanceof MethodInsnNode m && m.desc.contains("[L")
+                        && Candor.elemToStringSlots(m.owner, m.name, m.desc).length > 0) return true;
         // a method handing a value to a chained dependency (R1174), or a collection-typed parameter to a project
         // callee (a summary): neither needs a java.util call of its own
         String id = Cha.methodId(cn.name.replace('/', '.'), mn.name, mn.desc);
@@ -1403,6 +1407,12 @@ final class ElementFlow {
             // (objectKeyFloor is R1201's Object floor, S2/S2r/S2o)
             hashing(c, g, cn, mn, sf, f, pf, p, m, at, base, recv, self, id, i);
             objectKeyFloor(c, mn, sf, pf, p, m, recv, id);
+            // SOUNDNESS R1705 — a JDK body that stringifies the ELEMENTS of an object-array argument (`Arrays.toString(a)`,
+            // `"%s".formatted(a)`, `ps.printf(f, a)`): what is stored in that array, or its declared component, is
+            // stringified. A local varargs pack is also Candor#elementOperands's; this adds an array held anywhere else.
+            if (Candor.R1705.on())
+                for (int j : Candor.elemToStringSlots(m.owner, m.name, m.desc))
+                    if (base + j >= 0) arrayElems(c, g, cn, mn, sf, f, base + j, self, id, i, STR);
             // R1179: ORDERING over the elements of a container argument or receiver
             ordering(c, g, cn, mn, sf, f, p, m, at, base, recv, self, id, i);
             if (!isCollectionOwner(m.owner)) continue;
@@ -2113,7 +2123,13 @@ final class ElementFlow {
             String desc = null;
             switch (src.getOpcode()) {
                 case Opcodes.ANEWARRAY -> { String t = ((TypeInsnNode) src).desc; if (!t.startsWith("[")) out.add(t); }
-                case Opcodes.CHECKCAST -> desc = ((TypeInsnNode) src).desc;
+                case Opcodes.CHECKCAST -> {
+                    desc = ((TypeInsnNode) src).desc;
+                    // SOUNDNESS R1705 — `(Object[]) typedArray` (a varargs call handed a typed array) is an upcast: the
+                    // array is still its operand's, so its declared component is read through the cast
+                    if (desc.equals("[Ljava/lang/Object;") && Candor.R1705.on() && f != null && f.getStackSize() > 0)
+                        arrayComponents(mn, sf, f.getStack(f.getStackSize() - 1), out, seen);
+                }
                 case Opcodes.GETFIELD, Opcodes.GETSTATIC -> desc = ((FieldInsnNode) src).desc;
                 case Opcodes.INVOKESTATIC, Opcodes.INVOKEVIRTUAL, Opcodes.INVOKEINTERFACE, Opcodes.INVOKESPECIAL ->
                         desc = Type.getReturnType(((MethodInsnNode) src).desc).getDescriptor();

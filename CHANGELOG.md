@@ -9,6 +9,17 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **⚠ A JDK body that stringifies the ELEMENTS of an array argument now charges each element's `toString` (SOUNDNESS R1705).**
+  `"%s".formatted(o)`, `MessageFormat.format("{0}", o)`, `ps.printf("%s", o)`, `new Formatter().format("%s", o)`,
+  `Arrays.toString/deepToString(new Object[]{o})`, and a logger's varargs call (`LOG.info("{} {} {}", a, b, c)`, which compiles
+  to one `Object[]`) read ABSENT over an effectful `toString`, even with an exact `new` producer in the same body, on 0.41.3
+  and main alike (executed: each read a file); only `String.format` had a route. The derived JDK site table already named these
+  calls (`N[] toString`); the engine now reads it: a local varargs pack's stored values are decided as a `String.format` operand
+  is, an array held elsewhere by its stored or declared element type, and this body's own `Object` parameter packed into such an
+  array (or into `Objects.hash`/`Arrays.hashCode`) is a contract its callers are charged by what they pass, as for
+  `String.valueOf(p)`. A formatter's `%h` `hashCode` line is not used as a contract (a `%s` never runs it). `CANDOR_R1705=0` is
+  the measurement arm.
+
 - **⚠ A gate run under a result-moving JVM system property now refuses (exit 2), and the report names the property (SPEC ⟨0.42⟩
   §3.4 "the class binds the effect, not the channel"; SOUNDNESS R1645).** `candor.r1078`, `candor.r1461`, `candor.r1461.wide`,
   `candor.frameworkReach` and `candor.frameworkPure` change what this engine reports, and one `System.getProperty` read cannot tell

@@ -11,6 +11,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## [0.42.0] — 2026-11-12
 
+- jbang catalog points at the 0.42.0 jar.
+
 - **⚠ A JDK body that stringifies the ELEMENTS of an array argument now charges each element's `toString` (SOUNDNESS R1705).**
   `"%s".formatted(o)`, `MessageFormat.format("{0}", o)`, `ps.printf("%s", o)`, `new Formatter().format("%s", o)`,
   `Arrays.toString/deepToString(new Object[]{o})`, and a logger's varargs call (`LOG.info("{} {} {}", a, b, c)`, which compiles

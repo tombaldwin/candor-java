@@ -9,6 +9,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **Declares spec ⟨0.43⟩.** The new SPEC §2 clause (a chained row and a curated entry that answer one call are unioned) is what candor-java already does (R685); no behaviour change. Docs and the jbang catalog description name 0.43.
+
 ## [0.42.0] — 2026-11-12
 
 - jbang catalog points at the 0.42.0 jar.
